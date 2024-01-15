@@ -5,7 +5,6 @@ import sqlite3
 import os
 import numpy as np
 from xtquant import xtdata
-import datetime
 from scipy import stats
 import math
 import requests
@@ -13,6 +12,8 @@ import yfinance as yf
 import re
 import pywencai
 from bs4 import BeautifulSoup
+import MetaTrader5 as mt5
+from datetime import datetime, timedelta
 
 
 # 通过类似000001.SZ的代码获取最新数据（东财api），参数3个，分别是：代码（必要），天数，复权类型【可选值包括 0（不复权）、1（前复权）、2（后复权）】
@@ -22,8 +23,8 @@ def json_to_dfcf_qmt(code, days=7*365, fqt=1):
     else:
         code = "0." + code[:-3]
     try:
-        today = datetime.datetime.now().date()
-        start_time = (today - datetime.timedelta(days=days)).strftime("%Y%m%d")
+        today = datetime.now().date()
+        start_time = (today - timedelta(days=days)).strftime("%Y%m%d")
         end_date = today.strftime('%Y%m%d')
         url = f'http://push2his.eastmoney.com/api/qt/stock/kline/get?&secid={code}&fields1=f1,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt={fqt}&beg={start_time}&end={end_date}'
         response = requests.get(url)
@@ -124,3 +125,35 @@ def get_valuation_ratios(code):
 
     return ratios
 
+
+# 获取mt5中的行情数据，参数有3个：品种（必要），时间框架，天数。
+def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
+    # 连接到MetaTrader 5
+    if not mt5.initialize():
+        print("initialize() failed, error code =", mt5.last_error())
+        quit()
+    
+    try:
+        # 设置时间范围
+        current_time = datetime.now()
+        time_ago = current_time - timedelta(days=days_back)
+        
+        # 获取品种从指定时间前到当前时间的数据
+        rates = mt5.copy_rates_range(symbol, timeframe, time_ago, current_time)
+        
+        # 如果成功获取到数据，进行数据转换
+        if rates is not None and len(rates) > 0:
+            # 将数据转换为Pandas DataFrame
+            df = pd.DataFrame(rates)
+            # 转换时间格式
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            # 重命名 'tick_volume' 列为 'volume'
+            df.rename(columns={'tick_volume': 'volume'}, inplace=True)
+        else:
+            print(f"No rates data found for {symbol}")
+            df = pd.DataFrame()  # 如果没有数据，则返回一个空的DataFrame
+        return df
+    except Exception as e:
+        print(f"在获取数据时发生错误：{e}")
+        return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
+    
