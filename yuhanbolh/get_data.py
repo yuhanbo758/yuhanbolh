@@ -157,3 +157,4 @@ def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
         print(f"在获取数据时发生错误：{e}")
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
     
+# 获取mt5中的行情数据，参数有3个：品种（必要），时间框架，天数。
