@@ -14,6 +14,8 @@ import pywencai
 from bs4 import BeautifulSoup
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
+import baostock as bs
+from pytdx.hq import TdxHq_API
 
 
 # 通过类似000001.SZ的代码获取最新数据（东财api），参数3个，分别是：代码（必要），天数，复权类型【可选值包括 0（不复权）、1（前复权）、2（后复权）】
@@ -43,9 +45,89 @@ def json_to_dfcf_qmt(code, days=7*365, fqt=1):
         print(f"发生异常: {e}")
         return None
 
+# 与上面的函数相同，只是通数days参数为天数，而不是日期。比如100表示100个交易日的数据，而不是日期往前推100天。
+def json_to_dfcf_qmt_jyr(code, days=7*250, fqt=1):
+    if code.endswith("SH"):
+        code = "1." + code[:-3]
+    else:
+        code = "0." + code[:-3]
+    try:
+        today = datetime.now().date()
+        end_date = today.strftime('%Y%m%d')
+        url = f'http://push2his.eastmoney.com/api/qt/stock/kline/get?&secid={code}&fields1=f1,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt={fqt}&end={end_date}&lmt={days}'
+        response = requests.get(url)
+        data = response.json()
+        data = [x.split(',') for x in data['data']['klines']]
+        column_names = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']
+        df = pd.DataFrame(data, columns=column_names)
 
+        # 转换列为浮点数
+        float_columns = ['open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']
+        for col in float_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')  # 将无法转换的值设为NaN
+        
+        return df
+    except Exception as e:
+        print(f"发生异常: {e}")
+        return None
 
-# 获取乌龟量化的指数估值数据，没有参数
+# 从baostock获取股票数据，参数有4个：股票代码，周期，复权类型，指标列表
+# adjustflag默认为d，日k线；d=日k线、w=周、m=月、5=5分钟、15=15分钟、30=30分钟、60=60分钟k线数据
+# adjustflag复权类型：不复权：3；后复权：1；前复权：2
+def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
+    try:
+        # 登陆系统
+        lg = bs.login()
+        if lg.error_code != '0':
+            return f"Login failed: {lg.error_msg}"
+
+        # 计算开始日期和结束日期
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+
+        # 获取沪深A股历史K线数据
+        rs = bs.query_history_k_data_plus(stock_code,
+            "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+            start_date=start_date, end_date=end_date,
+            frequency=frequency, adjustflag=adjustflag)
+        
+        if rs.error_code != '0':
+            return f"Query failed: {rs.error_msg}"
+
+        # 打印结果集
+        data_list = []
+        while rs.next():
+            data_list.append(rs.get_row_data())
+        result = pd.DataFrame(data_list, columns=rs.fields)
+
+        # 登出系统
+        bs.logout()
+
+        return result
+
+    except Exception as e:
+        return f"An exception occurred: {str(e)}"
+
+# 获取通达信的数据，参数有3个：服务器IP、服务器端口、函数
+def get_financial_data(server_ip, server_port, data_function):
+    try:
+        api = TdxHq_API()
+
+        if api.connect(server_ip, server_port):
+            data = data_function(api)  # 使用传入的函数获取数据
+            if data is None:
+                api.disconnect()
+                return "No data received."
+
+            df = api.to_df(data)  # 转换为DataFrame
+            api.disconnect()
+            return df
+        else:
+            return "Connection failed."
+    except Exception as e:
+        return f"An exception occurred: {str(e)}"
+
+# 获取乌龟量化的指数估值数据，没有参数 
 def turtle_quant_analysis():
     # 设置请求头，模仿浏览器发送请求。
     headers = {
@@ -157,4 +239,3 @@ def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
         print(f"在获取数据时发生错误：{e}")
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
     
-# 获取mt5中的行情数据，参数有3个：品种（必要），时间框架，天数。
