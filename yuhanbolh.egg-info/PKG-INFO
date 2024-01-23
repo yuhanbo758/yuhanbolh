@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: yuhanbolh
-Version: 0.1.6
+Version: 0.1.9
 Summary: 量化投资，数据获取和处理
 Home-page: https://github.com/yuhanbo758/yuhanbolh
 Author: 余汉波
@@ -22,9 +22,9 @@ Requires-Python: >=3.6
 Description-Content-Type: text/markdown
 License-File: LICENSE
 
-<<<<<<< HEAD
+
 股票量化代码，包括通过qmt、同花顺问题和东财api等获取金融数据，以及处理量化这些数据
-=======
-# yuhanbolh
-股票量化代码，包括通过qmt、同花顺问题和东财api等获取金融数据，以及处理量化这些数据
->>>>>>> a4cc7dc29fbcc27b522e6b7dd73a82ae594a6587
+
+
+
+

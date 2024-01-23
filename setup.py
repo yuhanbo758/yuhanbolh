@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='yuhanbolh',
-    version='0.1.7',
+    version='0.1.9',
     packages=find_packages(),
     description='量化投资，数据获取和处理',
     long_description=open('README.md', encoding='utf-8').read(),
@@ -12,12 +12,10 @@ setup(
     author_email='909410919@qq.com',
     license='MIT',
     install_requires=[
-        'BeautifulSoup4'
+        'BeautifulSoup4',
         'requests',
         'numpy',
         'pandas',
-        'pytdx',
-        'xtquant',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',  # 根据您的开发状态选择：Alpha/Beta/Stable

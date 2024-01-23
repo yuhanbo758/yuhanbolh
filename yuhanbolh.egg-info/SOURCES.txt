@@ -2,7 +2,12 @@ LICENSE
 README.md
 setup.py
 yuhanbolh/__init__.py
+yuhanbolh/create_strategy.py
 yuhanbolh/get_data.py
+yuhanbolh/mt5_trade.py
+yuhanbolh/process_data.py
+yuhanbolh/qmt_trade.py
+yuhanbolh/send_message.py
 yuhanbolh.egg-info/PKG-INFO
 yuhanbolh.egg-info/SOURCES.txt
 yuhanbolh.egg-info/dependency_links.txt
