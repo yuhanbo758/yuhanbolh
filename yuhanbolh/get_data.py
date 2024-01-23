@@ -17,8 +17,38 @@ from datetime import datetime, timedelta
 import baostock as bs
 from pytdx.hq import TdxHq_API
 
+# 获取金融数据文件
 
-# 通过类似000001.SZ的代码获取最新数据（东财api），参数3个，分别是：代码（必要），天数，复权类型【可选值包括 0（不复权）、1（前复权）、2（后复权）】
+# 通过东方财富api获取K线数据，参数包括股票代码，天数，复权类型，K线类型
+# `klt`：K 线周期，可选值包括 5（5 分钟 K 线）、15（15 分钟 K 线）、30（30 分钟 K 线）、60（60 分钟 K 线）、101（日 K 线）、102（周 K 线）、103（月 K 线）等。
+# `fqt`：复权类型，可选值包括 0（不复权）、1（前复权）、2（后复权）。
+def json_to_dfcf(code, days=1, fqt=1, klt=101):     # 参数参考我的东方财富api文档
+    if code.endswith("SH"):
+        code = "1." + code[:-3]
+    else:
+        code = "0." + code[:-3]
+    try:
+        today = datetime.now().date()
+        start_time = (today - timedelta(days=days)).strftime("%Y%m%d")
+        end_date = today.strftime('%Y%m%d')
+        url = f'http://push2his.eastmoney.com/api/qt/stock/kline/get?&secid={code}&fields1=f1,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&&fqt={fqt}&beg={start_time}&end={end_date}'
+        response = requests.get(url)
+        data = response.json()
+        data = [x.split(',') for x in data['data']['klines']]
+        column_names = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']
+        df = pd.DataFrame(data, columns=column_names)
+
+        # 转换列为浮点数
+        float_columns = ['open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']
+        for col in float_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')  # 将无法转换的值设为NaN
+        
+        return df
+    except Exception as e:
+        print(f"发生异常: {e}")
+        return None
+
+# 通过类似000001.SZ的代码获取最新数据（东财api），参数3个，分别是：代码（必要），天数，复权类型
 def json_to_dfcf_qmt(code, days=7*365, fqt=1):
     if code.endswith("SH"):
         code = "1." + code[:-3]
@@ -78,8 +108,6 @@ def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
     try:
         # 登陆系统
         lg = bs.login()
-        if lg.error_code != '0':
-            return f"Login failed: {lg.error_msg}"
 
         # 计算开始日期和结束日期
         end_date = datetime.now().strftime('%Y-%m-%d')
@@ -91,9 +119,6 @@ def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
             start_date=start_date, end_date=end_date,
             frequency=frequency, adjustflag=adjustflag)
         
-        if rs.error_code != '0':
-            return f"Query failed: {rs.error_msg}"
-
         # 打印结果集
         data_list = []
         while rs.next():
@@ -107,6 +132,7 @@ def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
 
     except Exception as e:
         return f"An exception occurred: {str(e)}"
+
 
 # 获取通达信的数据，参数有3个：服务器IP、服务器端口、函数
 def get_financial_data(server_ip, server_port, data_function):
@@ -238,4 +264,85 @@ def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
     except Exception as e:
         print(f"在获取数据时发生错误：{e}")
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
-    
+
+# 从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据，常用
+def get_exchange_rate(secid):
+    """
+    从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据。
+
+    参数:
+    secid: str
+        股票代码，格式为 "市场代码.股票代码"，例如 "133.USDCNH"。
+
+    返回:
+    exchange_rate: float
+        提取的汇率数据。
+    """
+    # 构建 API URL
+    api_url = f"http://push2his.eastmoney.com/api/qt/stock/kline/get?" \
+              f"&secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8" \
+              f"&fields2=f50,f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" \
+              f"&klt=101&fqt=0&end=20280314&lmt=1"
+
+    try:
+        # 发送 GET 请求到 API URL
+        response = requests.get(api_url)
+
+        # 检查请求是否成功
+        if response.status_code == 200:
+            # 解析响应的 JSON 数据
+            data = response.json()
+            # 导航至 JSON 数据以找到所需数据
+            kline_data = data.get("data", {}).get("klines", [])
+            if kline_data:
+                # 从 kline 字符串中提取第二个值（汇率）
+                exchange_rate = kline_data[0].split(',')[2]
+                return float(exchange_rate)
+            else:
+                return "数据未找到"
+        else:
+            return "请求失败，状态码：" + str(response.status_code)
+    except Exception as e:
+        return "请求过程中发生异常：" + str(e)
+
+# 获取保存汇率数据到数据库，常用
+def save_exchange_rates_to_db(db_path, table_name):
+    """
+    获取所需的所有汇率，计算兑换到CNH的汇率，并将结果保存到数据库中。
+
+    参数:
+    db_path: str
+        数据库文件的路径。
+    table_name: str
+        数据库中的表名，用于存储汇率数据。
+    """
+    # 从 API 或模拟函数中获取所有需要的汇率
+    rate_identifiers = ["119.USDJPY", "119.EURGBP", "119.EURAUD", "119.GBPAUD", "119.GBPUSD", "119.EURUSD", "133.USDCNH"]
+    rates = {secid.split('.')[1]: get_exchange_rate(secid) for secid in rate_identifiers}
+
+    # 计算其他货币对人民币的汇率
+    rates["JPYCNH"] = (1 / rates["USDJPY"]) * rates["USDCNH"]
+    rates["GBPCNH"] = (1 / rates["EURGBP"]) * rates["EURUSD"] * rates["USDCNH"]
+    rates["AUDCNH"] = (1 / rates["EURAUD"]) * rates["EURUSD"] * rates["USDCNH"]
+    rates["EURCNH"] = rates["EURUSD"] * rates["USDCNH"]
+
+    # 将汇率数据转换为 DataFrame
+    df_rates = pd.DataFrame(list(rates.items()), columns=["货币对", "汇率"])
+
+    # 连接到 SQLite 数据库，并将汇率数据保存到指定的表中
+    conn = sqlite3.connect(db_path)
+    df_rates.to_sql(table_name, conn, if_exists='replace', index=False)
+    conn.close()
+
+    # 输出一条信息，确认数据已被保存
+    print("汇率数据已经成功保存到数据库表：" + table_name)
+
+
+
+
+
+
+
+
+
+

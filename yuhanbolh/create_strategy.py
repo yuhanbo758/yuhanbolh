@@ -16,8 +16,7 @@ import random
 import os
 import schedule
 import time
-
-
+# 策略文件
 
 db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
 

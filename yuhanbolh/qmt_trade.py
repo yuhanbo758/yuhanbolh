@@ -13,11 +13,10 @@ import random
 import os
 import schedule
 import time
-import send_email as se
+import send_message as sm
 import threading
 
-
-# 国金qmt的委托、交易和推送文件
+# qmt的委托、交易和推送文件
 
 
 # 时间的转换和格式化函数
@@ -262,8 +261,6 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
                     order_id = xt_trader.order_stock(acc, stock_code, order_type, order_volume, price_type, price, strategy_name, order_remark)
                     print(order_id, stock_code, order_type, order_volume, price)
                 except Exception as e:
-                    error_message = f"报单操作失败，原因：{str(e)}"
-                    se.send_other_email(error_message)
                     print(f"报单操作失败，原因：{e}")
                     continue
         else:
@@ -575,7 +572,7 @@ def se_send_email_on_error(func):
             return func(*args, **kwargs)
         except Exception as e:
             error_message = f"在运行 {func.__name__} 函数时发生错误：{str(e)}"
-            se.send_other_email(error_message)
+            sm.send_email('sender_email', 'sender_password', 'receiver_email', error_message)
     return wrapper
 
 # 查询未成交的委托，然后进行逐一撤单
@@ -668,7 +665,7 @@ if __name__ == '__main__':
             if "09:00" <= current_time <= "16:10" and 0 <= current_weekday <= 4:
                 # 需传入下面四个参数，分别是QMT交易端路径、账户ID、数据库路径、计划任务线程
                 path = r'D:\国金证券QMT交易端\userdata_mini'
-                acc = StockAccount('845465468')
+                acc = StockAccount('84845668')
                 db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
 
 
