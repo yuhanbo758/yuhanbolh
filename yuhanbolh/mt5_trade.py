@@ -3,7 +3,7 @@ import numpy as np
 import math
 import time
 import MetaTrader5 as mt5
-import send_message as sm
+from . import send_message as sm
 import schedule
 import sqlite3
 from datetime import datetime, timezone, timedelta, date

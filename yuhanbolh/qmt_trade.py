@@ -13,7 +13,7 @@ import random
 import os
 import schedule
 import time
-import send_message as sm
+from . import send_message as sm
 import threading
 
 # qmt的委托、交易和推送文件
