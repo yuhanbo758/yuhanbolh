@@ -18,7 +18,7 @@ import schedule
 import time
 # 策略文件
 
-db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
+
 
 # 以下是打地鼠策略的函数
 # 读取需要打地鼠的数据库中的持仓数据，并保存到数据表——与策略一起运行，与打地鼠策略无直接关系。
@@ -259,6 +259,7 @@ def place_order_based_on_asset(xt_trader: str, acc: str):
     else:
         print('连接失败')
 
-
+if __name__ == "__main__":
+    db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
 
 

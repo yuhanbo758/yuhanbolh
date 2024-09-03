@@ -203,6 +203,90 @@ def akshare_convertible_bond():
     return df
 
 
+# 通过问财的问询方式爬取问财的数据——条件：满足强赎
+def get_satisfy_redemption(query):
+    try:
+        data = pywencai.get(query=query, query_type='conbond', loop=True)
+        
+        # 指定需要查找和重命名的列名
+        col_names_to_change = ["可转债代码", "可转债简称", "最新价", "正股代码", "正股简称", "强赎天计数"]
+        for name in col_names_to_change:
+            col_name = [col for col in data.columns if name in col]
+            if col_name:
+                # 重命名列名
+                data.rename(columns={col_name[0]: name}, inplace=True)
+            else:
+                # 若未找到，则创建一个新的列，所有值都为空
+                data[name] = np.nan
+        
+        # 只保留指定的列
+        data = data[col_names_to_change]
+        return data
+    except Exception as e:
+        print(f"获取满足强赎数据时出错: {e}")
+        return pd.DataFrame()
+    
+# 通过问财的问询方式爬取问财的数据——条件：可转债策略
+def wencai_conditional_query(query):
+    try:
+        data = pywencai.get(query=query, query_type='conbond', loop=True)
+        
+        # 指定需要查找和重命名的列名
+        col_names_to_change = ["可转债代码", "可转债简称", "最新价", "正股代码", "正股简称", "纯债价值", "期权价值", "最新变动后余额", "转股溢价率", "转股价值"]
+        for name in col_names_to_change:
+            col_name = [col for col in data.columns if name in col]
+            if col_name:
+                # 重命名列名
+                data.rename(columns={col_name[0]: name}, inplace=True)
+            else:
+                # 若未找到，则创建一个新的列，所有值都为空
+                data[name] = np.nan
+        
+        # 只保留指定的列
+        data = data[col_names_to_change]
+        return data
+    except Exception as e:
+        print(f"获取可转债策略数据时出错: {e}")
+        return pd.DataFrame()
+
+
+# 获取集思录的可转债强赎数据，并保存到数据库
+def filter_bond_cb_redeem_data_and_save_to_db():
+    try:
+        # 获取数据
+        bond_cb_redeem_jsl_df = ak.bond_cb_redeem_jsl()
+
+        # 提取需要的列
+        selected_columns = ['代码', '名称', '现价', '正股代码', '正股名称', '强赎状态']
+        filtered_df = bond_cb_redeem_jsl_df[selected_columns]
+
+        # 更改列名
+        new_column_names = ['可转债代码', '可转债简称', '最新价', '正股代码', '正股简称', '强赎天计数']
+        filtered_df.columns = new_column_names
+
+        # 使用str.contains方法筛选出“已公告强赎”和“公告要强赎”的行
+        # filtered_rows = filtered_df[filtered_df['强赎天计数'].str.contains('已公告强赎|公告要强赎')]
+        filtered_rows = filtered_df[filtered_df['强赎天计数'].str.contains('已公告强赎|公告要强赎')].copy()
+
+        # 修改“可转债代码”列的数据
+        filtered_rows.loc[filtered_rows['可转债代码'].str.startswith('11'), '可转债代码'] = filtered_rows['可转债代码'] + '.SH'
+        filtered_rows.loc[filtered_rows['可转债代码'].str.startswith('12'), '可转债代码'] = filtered_rows['可转债代码'] + '.SZ'
+        
+        # 连接到数据库
+        db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
+        conn = sqlite3.connect(db_path)
+
+        # 将数据保存到数据库表
+        table_name = "满足赎回可转债"
+        filtered_rows.to_sql(table_name, conn, if_exists="replace", index=False)
+
+        print("数据成功保存到数据库")
+    except Exception as e:
+        print(f"保存数据到数据库时出错: {e}")
+    finally:
+        # 无论是否出现异常都关闭数据库连接
+        conn.close()
+
 # 获取价值大师网的大师价值数据，参数为：股票代码
 def get_valuation_ratios(code):
     url = f'https://www.gurufocus.cn/stock/{code}/term/gf_value'

@@ -175,7 +175,6 @@ def calculate_remaining_holdings(db_path, strategy_tables):
 
 # 证券委托，参数分别是：数据库路径、委托数据表名称、成交数据表名称、判断处函数前缀（不改动）、账号（不改动）
 # 注：报价类型主要有xtconstant.FIX_PRICE（限价）、xtconstant.LATEST_PRICE（最新介）、xtconstant.MARKET_PEER_PRICE_FIRST（对手方最优）、xtconstant.MARKET_MINE_PRICE_FIRST（本方最优）
-# place_orders(db_path, 'your_table_name', 'your_trade_table_name', xt_trader, acc)
 def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
     try:
         # 连接到SQLite数据库
@@ -231,7 +230,7 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
                 if order_type == xtconstant.STOCK_BUY:
                     asset = xt_trader.query_stock_asset(acc)
                     # 针对特定表名增加额外的现金保留条件
-                    if table_name in ['place_fund_grid_order'] and asset.cash <= 5000:
+                    if table_name in ['place_fund_grid_order', 'place_fund_basics_technical_order'] and asset.cash <= 3000:
                         print("基金交易，保存现金3000，金额不足，跳过买入")
                         continue
                     
@@ -261,6 +260,8 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
                     order_id = xt_trader.order_stock(acc, stock_code, order_type, order_volume, price_type, price, strategy_name, order_remark)
                     print(order_id, stock_code, order_type, order_volume, price)
                 except Exception as e:
+                    error_message = f"报单操作失败，原因：{str(e)}"
+                    se.send_other_email(error_message)
                     print(f"报单操作失败，原因：{e}")
                     continue
         else:
@@ -270,6 +271,10 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
     finally:
         # 无论是否出现异常，都关闭数据库连接
         conn.close()
+
+# 使用示例，参数分别是：数据库路径、委托数据表名称、成交数据表名称、判断处函数前缀（不改动）、账号（不改动）
+# place_orders(db_path, 'your_table_name', 'your_trade_table_name', xt_trader, acc)
+
 
 # 比较沪深两市的一天期的买一国债逆回购，选择值大的进行卖出
 def place_order_based_on_asset(xt_trader, acc, xtdata):
@@ -651,6 +656,11 @@ def schedule_jobs():
         # 在这里确保在退出函数前将线程运行状态设置为False
 
 
+
+
+
+
+
 # 下面是运行例子
 if __name__ == '__main__':
     global schedule_thread
@@ -665,7 +675,7 @@ if __name__ == '__main__':
             if "09:00" <= current_time <= "16:10" and 0 <= current_weekday <= 4:
                 # 需传入下面四个参数，分别是QMT交易端路径、账户ID、数据库路径、计划任务线程
                 path = r'D:\国金证券QMT交易端\userdata_mini'
-                acc = StockAccount('84845668')
+                acc = StockAccount('8484565568')
                 db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
 
 
@@ -705,3 +715,15 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"运行过程中发生错误: {e}")
             time.sleep(1800)  # 如果遇到异常，休息半小时再试
+
+
+
+
+
+
+
+
+
+
+
+

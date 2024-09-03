@@ -18,6 +18,10 @@ import pywencai
 # 数据处理文件，主要为技术指标的计算
 
 
+
+
+
+
 # 定义函数，根据element_pj的值返回对应的得分
 def get_score(element_pj):
     try:

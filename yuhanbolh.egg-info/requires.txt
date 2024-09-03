@@ -1,4 +1,0 @@
-BeautifulSoup4
-requests
-numpy
-pandas

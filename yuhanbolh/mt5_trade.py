@@ -9,7 +9,6 @@ import sqlite3
 from datetime import datetime, timezone, timedelta, date
 # mt5交易委托文件
 
-db_path = r'D:\wenjian\python\smart\data\mt5_demo.db'
 
 # 将持仓数据保存到数据库
 def export_positions_to_db(db_path, table_name):
@@ -751,6 +750,7 @@ def schedule_jobs():
 
 
 if __name__ == '__main__':
+    db_path = r'D:\wenjian\python\smart\data\mt5_demo.db'
     # MT5连接，需要修改的内容主要包括：MT5安装路径、MT5账号、MT5密码、MT5服务器
     while True:
         # 获取当前星期几
@@ -784,6 +784,6 @@ if __name__ == '__main__':
             time.sleep(3600)  # 每小时检查一次
 
 
-
+    
 
     
