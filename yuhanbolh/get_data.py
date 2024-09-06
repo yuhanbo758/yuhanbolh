@@ -584,7 +584,7 @@ def get_snapshot(code_list: List[str]):
     return df
 
 
-# 读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，最后打印合并后的数据。
+# 读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，最后打印并合并后的数据。
 def process_and_merge_data(db_path: str, table_name: str, acc: str):
     """
     读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，
@@ -632,6 +632,7 @@ def process_and_merge_data(db_path: str, table_name: str, acc: str):
     finally:
         # 关闭数据库连接
         conn.close()
+
 
 
 
