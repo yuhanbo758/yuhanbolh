@@ -3,7 +3,7 @@ import numpy as np
 import math
 import time
 import MetaTrader5 as mt5
-from . import send_message as sm
+from . import send_email as sm
 import schedule
 import sqlite3
 from datetime import datetime, timezone, timedelta, date
@@ -129,7 +129,7 @@ def execute_order_from_db(db_path, table_name):
 
     # 检查数据框是否为空
     if df.empty:
-        print("No orders found in the database.")
+        print("委托数据表为空")
         return
 
     # 遍历DataFrame中的每一行
@@ -142,7 +142,7 @@ def execute_order_from_db(db_path, table_name):
             # 获取当前市场价格
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info is None:
-                print(f"Failed to get symbol info for {symbol}")
+                print(f"无法获取品种信息：{symbol}")
                 continue
 
             current_price = symbol_info.bid if order_type in [0, 2] else symbol_info.ask
@@ -155,7 +155,9 @@ def execute_order_from_db(db_path, table_name):
                 action = 1  # 市价委托
                 order_type = 1  # 市价卖单
             else:
-                action = 5  # 限价委托
+                # action = 5  # 限价委托
+                action = order_info['交易类型']  # 假设你已经在订单信息中存储了原始的动作
+                order_type = order_info['订单类型']  # 保持原始的订单类型
 
             # 检查是否已有相同的委托单
             existing_orders = mt5.orders_get(symbol=symbol, magic=int(order_info['EA_id']), type=order_type)
@@ -163,7 +165,7 @@ def execute_order_from_db(db_path, table_name):
                 for order in existing_orders:
                     # 撤销已有的委托单
                     request_cancel = {
-                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "action": mt5.TRADE_ACTION_REMOVE,   # 相当于8
                         "order": order.ticket
                     }
                     mt5.order_send(request_cancel)
@@ -207,7 +209,7 @@ def execute_order_from_db(db_path, table_name):
     # 断开MetaTrader 5连接
     # mt5.shutdown()
 
-# 插入市价委托
+# 插入市价委托，参数：conn为数据库连接对象，magic为EA的magic number，symbol为交易品种，volume为交易量，sl为止损价，tp为止盈价，deviation为价格偏差，type为订单类型，comment为订单注释
 def market_order_fn(conn, magic, symbol, volume, sl, tp, deviation, type, comment):
     try:
         insert_query = """
@@ -224,8 +226,6 @@ def market_order_fn(conn, magic, symbol, volume, sl, tp, deviation, type, commen
 
     except Exception as e:
         print("An error occurred:", e)
-
-
 
 
 
@@ -249,6 +249,7 @@ def limit_order_fn(conn, magic, symbol, volume, price, sl, tp, deviation, type, 
 
 
 
+
 # 插入平仓委托
 def close_position_fn(conn, magic, symbol, volume, deviation, type, comment, position):
     try:
@@ -266,6 +267,7 @@ def close_position_fn(conn, magic, symbol, volume, deviation, type, comment, pos
 
     except Exception as e:
         print("An error occurred:", e)
+
 
 
 # 插入撤单委托
@@ -287,362 +289,84 @@ def cancel_order_fn(conn, magic, order):
         print("An error occurred:", e)
 
 
-
-# 将查询结果转换为字典格式，以便可以通过列名访问数据。
-def dict_factory(cursor, row):
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
-
-# 获得美股网格交易委托数据，有4个参数，分别是数据库路径、总评价表名、EA策略代码、交易金额
-# 例如get_stock_grid_orders(db_path, "纳指100总评价", 8, 500)
-def get_stock_grid_orders(db_path, table_name, magic_number, volume_base):
+# 插入撤销未成交的订单
+def cancel_pending_order(db_path, magic):
+    """
+    从 unsettled_orders 表中读取特定 magic 的数据，并将其插入到 forex_order 表中
+    :param db_path: 数据库文件路径
+    :param magic: 用于筛选的 magic 值
+    """
+    # 连接到数据库
     conn = sqlite3.connect(db_path)
-    conn.row_factory = dict_factory
 
     try:
-        cursor = conn.cursor()
+        # 查询指定 magic 值的 unsettled_orders 表中的数据
+        select_query = "SELECT ticket FROM unsettled_orders WHERE magic = ?"
+        cursor = conn.execute(select_query, (magic,))
+        rows = cursor.fetchall()
 
-        # 清空forex_order表
-        cursor.execute("DELETE FROM forex_order")
-        conn.commit()
+        # 遍历查询结果并插入到 forex_order 表中
+        for row in rows:
+            ticket = row[0]
+            cancel_order_fn(conn, magic, ticket)
 
-        # 查询“纳指100总评价”表中的所有记录
-        cursor.execute(f"SELECT * FROM `{table_name}`")
-        nasdaq_evaluations = cursor.fetchall()
+    except sqlite3.OperationalError as e:
+        print(f"查询或插入时出错: {e}")
 
-        for eval in nasdaq_evaluations:
-            symbol = eval['mt5代码']
-            close = eval['close']
-            std_residuals_lyear = eval['std_residuals_1year']
-            grid = eval['网格']
-            comment = f'{table_name}网格'
-
-            if grid is None:
-                continue
-
-            # 查找“position”表中指定magic且对应的symbol的记录
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ?", (symbol, magic_number))
-            positions = cursor.fetchall()
-
-            # 查询策略内多单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 0))
-            positions_type_0 = cursor.fetchall()
-
-            # 查询策略内空单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 1))
-            positions_type_1 = cursor.fetchall()
-
-            # 通过magic和symbol查询position表中的记录数量
-            position_count = len(positions)
-
-            # 如果position记录数超过10，跳过插入委托数据
-            if position_count > 10:
-                continue
-
-            # 查询“汇率换算”表中“USDCNH”的汇率
-            cursor.execute("SELECT 汇率 FROM `汇率换算` WHERE 货币对 = 'USDCNH'")
-            exchange_rate_result = cursor.fetchone()
-            if exchange_rate_result is None:  # 确保汇率信息存在
-                continue
-            exchange_rate = exchange_rate_result['汇率']
-
-            # 计算volume
-            volume = volume_base / exchange_rate / close
-            # 向上取至最接近的0.1
-            volume = math.ceil(volume * 10) / 10
-
-            magic = magic_number
-            # 获取symbol的价格偏差
-            symbol_info = mt5.symbol_info(symbol)
-            if symbol_info is None:  # 确保symbol信息存在
-                continue
-            deviation = symbol_info.point * 10
-
-            if grid >= 3:
-                # 处理多头订单逻辑
-                tp = close + std_residuals_lyear
-                type = 2  # 多头订单类型
-                if not positions:
-                    # 插入新的多头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-                else:
-                    # 检查现有的多头订单是否需要操作
-                    latest_position = max(positions, key=lambda x: x['time'])
-                    price_open = latest_position['price_open']
-                    price_current = latest_position['price_current']
-                    if price_open - std_residuals_lyear > price_current:
-                        # 插入新的多头订单
-                        limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-
-
-            # 清仓所有订单
-            elif grid >= 2 and grid <= 3 and len(positions_type_1) > 0:
-                # 平所有空头订单
-                type = 0  # 平空头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-            elif grid <= -2 and grid >= -3 and len(positions_type_0) > 0:
-                # 平所有多头订单
-                type = 1  # 平多头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-            
-
-
-            elif grid <= -4:
-                # 处理空头订单逻辑
-                tp = close - std_residuals_lyear
-                type = 3  # 空头订单类型
-                if not positions:
-                    # 插入新的空头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-                # 如果有其他处理逻辑，例如检查现有的空头订单是否需要操作，可以在这里添加
-                else:
-                    # 检查现有的空头订单是否需要操作
-                    latest_position = max(positions, key=lambda x: x['time'])
-                    price_open = latest_position['price_open']
-                    price_current = latest_position['price_current']
-                    if price_open + std_residuals_lyear < price_current:
-                        # 插入新的空头订单
-                        limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-
-    except Exception as e:
-        print("发生错误:", e)
     finally:
-        # 确保在函数结束前关闭数据库连接
-        conn.close()
-
-# 获得美股基本技术交易委托数据，有4个参数，分别是数据库路径、总评价表名、EA策略代码、交易金额
-# 例如get_stock_basic_tech_orders(db_path, "纳指100总评价", 9, 1000)
-def get_stock_basic_tech_orders(db_path, table_name, magic_number, volume_base):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = dict_factory
-
-    try:
-        cursor = conn.cursor()
-
-        # 清空forex_order表
-        cursor.execute("DELETE FROM forex_order")
-        conn.commit()
-
-        # 查询“纳指100总评价”表中的所有记录
-        cursor.execute(f"SELECT * FROM `{table_name}`")
-        nasdaq_evaluations = cursor.fetchall()
-
-        for eval in nasdaq_evaluations:
-            symbol = eval['mt5代码']
-            close = eval['close']
-            std_residuals_lyear = eval['std_residuals_1year']
-            grid = eval['基本技术']
-            comment = f'{table_name}基本技术'
-            
-            if grid is None:
-                continue
-
-            # 查找“position”表中指定magic且对应的symbol的记录
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? ", (symbol, magic_number))
-            positions = cursor.fetchall()
-
-            # 通过magic和symbol查询position表中的记录数量
-            position_count = len(positions)
-
-            # 查询策略内多单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 0))
-            positions_type_0 = cursor.fetchall()
-
-            # 查询策略内空单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 1))
-            positions_type_1 = cursor.fetchall()
-
-            # 如果position记录数超过10，跳过插入委托数据
-            if position_count > 10:
-                continue
-
-            # 查询“汇率换算”表中“USDCNH”的汇率
-            cursor.execute("SELECT 汇率 FROM `汇率换算` WHERE 货币对 = 'USDCNH'")
-            exchange_rate_result = cursor.fetchone()
-            if exchange_rate_result is None:  # 确保汇率信息存在
-                continue
-            exchange_rate = exchange_rate_result['汇率']
-
-            # 计算volume
-            volume = volume_base / exchange_rate / close
-            # 向上取至最接近的0.1
-            volume = math.ceil(volume * 10) / 10
-
-            magic = magic_number
-            # 获取symbol的价格偏差
-            symbol_info = mt5.symbol_info(symbol)
-            if symbol_info is None:  # 确保symbol信息存在
-                continue
-            deviation = symbol_info.point * 10
-
-            if grid >= 4 and grid <= 6:
-                # 处理多头订单逻辑
-                tp = close * 1.15
-                type = 2  # 多头订单类型
-                if (position_count == 0 and grid >= 4) or \
-                   (position_count == 1 and grid >= 5) or \
-                   (position_count == 2 and grid == 6):
-                    # 插入新的多头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-
-            elif grid >= 1 and grid <= 3 and len(positions_type_1) > 0:
-                # 平所有空头订单
-                type = 0  # 平空头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-            elif grid <= -1 and grid >= -3 and len(positions_type_0) > 0:
-                # 平所有多头订单
-                type = 1  # 平多头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-            elif grid <= -4 and grid >= -6:
-                # 处理空头订单逻辑
-                tp = close * 0.85
-                type = 3  # 空头订单类型
-                if (position_count == 0 and grid <= -5) or \
-                   (position_count == 1 and grid <= -6):
-                    # 插入新的空头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-    except Exception as e:
-        print("发生错误:", e)
-    finally:
-        # 确保在函数结束前关闭数据库连接
+        # 关闭数据库连接
         conn.close()
 
 
 
-# 获得指数外汇网格交易委托数据，有3个参数，分别是数据库路径、总评价表名、EA策略代码
-# 例如get_index_forex_grid_orders(db_path, "指数外汇总评价", 1)
-def get_index_forex_grid_orders(db_path, table_name, magic_number):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = dict_factory
-
+# 从成分股中清除不能在mt5交易的产品，参数分别是需要清除的数据库路径和表名
+def remove_unavailable_products_mt5(db_path, table_name):
     try:
+        # 获取所有交易品种的名称
+        symbols = mt5.symbols_get()
+        if symbols is None:
+            raise Exception("无法获取交易品种，可能是MetaTrader 5未初始化")
+
+        symbol_names = {symbol.name for symbol in symbols}
+
+        # 连接到SQLite数据库
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # 清空forex_order表
-        cursor.execute("DELETE FROM forex_order")
+        # 读取指定表中的所有列数据
+        cursor.execute(f"SELECT * FROM {table_name}")
+        rows = cursor.fetchall()
+
+        # 获取表的列名
+        column_names = [description[0] for description in cursor.description]
+
+        # 遍历数据库中的代码，与交易品种对比
+        deleted_rows = []
+        for row in rows:
+            mt5_code = row[column_names.index('mt5代码')]
+            if mt5_code not in symbol_names:
+                # 如果代码不在交易品种中，删除该行数据
+                cursor.execute(f"DELETE FROM {table_name} WHERE mt5代码 = ?", (mt5_code,))
+                deleted_rows.append(row)
+
+        # 提交更改
         conn.commit()
 
-        # 查询“纳指100总评价”表中的所有记录
-        cursor.execute(f"SELECT * FROM `{table_name}`")
-        nasdaq_evaluations = cursor.fetchall()
+        # 打印被删除的行
+        print("以下行已被删除：")
+        for deleted_row in deleted_rows:
+            print(dict(zip(column_names, deleted_row)))
 
-        for eval in nasdaq_evaluations:
-            symbol = eval['mt5代码']
-            close = eval['close']
-            std_residuals_lyear = eval['std_residuals_1year']
-            grid = eval['网格']
-            volume = eval['手数']
-            comment = f'{table_name}网格'
-
-            # 查找“position”表中指定magic且对应的symbol的记录
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ?", (symbol, magic_number))
-            positions = cursor.fetchall()
-
-
-
-            # 查询策略内多单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 0))
-            positions_type_0 = cursor.fetchall()
-
-            # 查询策略内空单的数据，用于计算持仓个数
-            cursor.execute("SELECT * FROM position WHERE symbol = ? AND magic = ? AND type = ?", (symbol, magic_number, 1))
-            positions_type_1 = cursor.fetchall()
-
-
-
-
-            # 通过magic和symbol查询position表中的记录数量
-            position_count = len(positions)
-
-            # 如果position记录数超过10，跳过插入委托数据
-            if position_count > 10:
-                continue
-
-            magic = magic_number
-            # 获取symbol的价格偏差
-            symbol_info = mt5.symbol_info(symbol)
-            if symbol_info is None:  # 确保symbol信息存在
-                continue
-            deviation = symbol_info.point * 10
-
-            if grid >= 3:
-                # 处理多头订单逻辑
-                tp = close + std_residuals_lyear
-                type = 2  # 多头订单类型
-                if not positions:
-                    # 插入新的多头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-                else:
-                    # 检查现有的多头订单是否需要操作
-                    latest_position = max(positions, key=lambda x: x['time'])
-                    price_open = latest_position['price_open']
-                    price_current = latest_position['price_current']
-                    if price_open - std_residuals_lyear > price_current:
-                        # 插入新的多头订单
-                        limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-            
-
-            
-            # 清仓所有订单
-            elif grid >= 2 and grid <= 3 and len(positions_type_1) > 0:
-                # 平所有空头订单
-                type = 0  # 平空头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-            elif grid <= -2 and grid >= -3 and len(positions_type_0) > 0:
-                # 平所有多头订单
-                type = 1  # 平多头订单
-                for position in positions:
-                    ticket = position['ticket']
-                    volume = position['volume']
-                    close_position_fn(conn, magic, symbol, volume, deviation, type, comment, ticket)
-
-
-
-
-            elif grid <= -3:
-                # 处理空头订单逻辑
-                tp = close - std_residuals_lyear
-                type = 3  # 空头订单类型
-                if not positions:
-                    # 插入新的空头订单
-                    limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-                # 如果有其他处理逻辑，例如检查现有的空头订单是否需要操作，可以在这里添加
-                else:
-                    # 检查现有的空头订单是否需要操作
-                    latest_position = max(positions, key=lambda x: x['time'])
-                    price_open = latest_position['price_open']
-                    price_current = latest_position['price_current']
-                    if price_open + std_residuals_lyear < price_current:
-                        # 插入新的空头订单
-                        limit_order_fn(conn, magic, symbol, volume, close, 0, tp, deviation, type, comment)
-
+    except sqlite3.Error as e:
+        print(f"数据库操作出错: {e}")
     except Exception as e:
-        print("发生错误:", e)
+        print(f"发生错误: {e}")
     finally:
-        # 确保在函数结束前关闭数据库连接
-        conn.close()
+        # 确保关闭数据库连接
+        if conn:
+            conn.close()
+
+
 
 # 处理并保存“非策略持仓”，筛选出不是所有策略的持仓，即不在策略的成分股中，已经被剔除，每月运行一次。参数：数据库路径，策略表名，策略magic值（即策略值）
 def export_non_strategy_positions(db_path, tables, magic_values):
@@ -712,7 +436,6 @@ def process_non_strategy_positions(db_path):
     
     # 关闭数据库连接
     conn.close()
-
 
 # 定义装饰器函数，用于处理任务函数中的异常
 # 需修改的内容：sender_email、sender_password、receiver_email

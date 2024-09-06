@@ -13,8 +13,9 @@ import random
 import os
 import schedule
 import time
-from . import send_message as sm
+from . import send_email as se
 import threading
+
 
 # qmt的委托、交易和推送文件
 
@@ -577,7 +578,7 @@ def se_send_email_on_error(func):
             return func(*args, **kwargs)
         except Exception as e:
             error_message = f"在运行 {func.__name__} 函数时发生错误：{str(e)}"
-            sm.send_email('sender_email', 'sender_password', 'receiver_email', error_message)
+            se.send_email('sender_email', 'sender_password', 'receiver_email', error_message)
     return wrapper
 
 # 查询未成交的委托，然后进行逐一撤单
@@ -675,7 +676,7 @@ if __name__ == '__main__':
             if "09:00" <= current_time <= "16:10" and 0 <= current_weekday <= 4:
                 # 需传入下面四个参数，分别是QMT交易端路径、账户ID、数据库路径、计划任务线程
                 path = r'D:\国金证券QMT交易端\userdata_mini'
-                acc = StockAccount('8484565568')
+                acc = StockAccount('8484555568')
                 db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
 
 

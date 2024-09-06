@@ -14,6 +14,8 @@ import math
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import pywencai
+from scipy import optimize
+import mt5_ic_custom as mic
 
 # 数据处理文件，主要为技术指标的计算
 
@@ -174,19 +176,17 @@ def get_row(data, index):
     return data.iloc[[index]].reset_index(drop=True)
 
 
+# 获取简单移动平均线，参数有2个，一个是数据源，一个是日期
 def MA(data, n):
     MA = pd.Series(data['close'].rolling(n).mean(), name='MA_' + str(n))
-    close = data['close']
-    signal = np.where(MA < close, 1, np.where(MA > close, -1, 0))
-    return pd.DataFrame(signal, columns=['MA_' + str(n)])  # 修改这行
+    return MA.dropna()
 
 
 # 获取指数移动平均线，参数有2个，一个是数据源，一个是日期
 def EMA(data, n):
     EMA = pd.Series(data['close'].ewm(span=n, min_periods=n).mean(), name='EMA_' + str(n))
-    close = data['close']
-    signal = np.where(EMA < close, 1, np.where(EMA > close, -1, 0))
-    return pd.DataFrame(signal, columns=['EMA_' + str(n)])
+    return EMA.dropna()
+
 
 
 # 获取一目均衡表基准线 (data, conversion_periods, base_periods, lagging_span2_periods, displacement)
@@ -203,27 +203,18 @@ def ichimoku_cloud(data, conversion_periods, base_periods, lagging_span2_periods
     lagging_span = data['close'].shift(-displacement + 1).shift(25).ffill()
     leading_span_a = lead_line1.shift(displacement - 1)
     leading_span_b = lead_line2.shift(displacement - 1)
-    # 计算买入和卖出信号
-    buy_signal = (base_line < data['close']) & (conversion_line > data['close'].shift(1)) & (conversion_line <= data['close']) & (lead_line1 > data['close']) & (lead_line1 > lead_line2)
-    sell_signal = (base_line > data['close']) & (conversion_line < data['close'].shift(1)) & (conversion_line >= data['close']) & (lead_line1 < data['close']) & (lead_line1 < lead_line2)
-    # 使用np.where生成信号列，买入为1，卖出为-1，中立为0
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
     
-    return pd.DataFrame(signal, columns=['Ichimoku'])
+    ichimoku_data = pd.concat([conversion_line, base_line, lagging_span, lead_line1, lead_line2, leading_span_a, leading_span_b], axis=1)
+    ichimoku_data.columns = ['Conversion Line', 'Base Line', 'Lagging Span', 'lead_line1', 'lead_line2', 'Leading Span A', 'Leading Span B']
+    
+    return ichimoku_data.dropna()
 
 
 
 # 成交量加权移动平均线 VWMA (data, 20)，参数有2个，1个是数据源，另一个是日期，通过为20
 def VWMA(data, n):
-    # 计算VWMA
-    vwma = (data['close'] * data['volume']).rolling(n).sum() / data['volume'].rolling(n).sum()
-    
-    # 根据VWMA和收盘价计算买卖信号
-    buy_signal = vwma < data['close']
-    sell_signal = vwma > data['close']
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
-    
-    return pd.DataFrame(signal, columns=['VWMA_' + str(n)])
+    VWMA = pd.Series((data['close'] * data['volume']).rolling(n).sum() / data['volume'].rolling(n).sum(), name='VWMA_' + str(n))
+    return VWMA.dropna()
 
 
 # 计算Hull MA船体移动平均线 Hull MA (data,9)，参数有2，一个是数据源，另一个是日期，一般为9
@@ -236,13 +227,9 @@ def HullMA(data, n=9):
     wma1 = wma(source, n // 2) * 2
     wma2 = wma(source, n)
     hullma = wma(wma1 - wma2, int(math.floor(math.sqrt(n))))
-
-    # 根据HullMA和收盘价计算买卖信号
-    buy_signal = hullma < source
-    sell_signal = hullma > source
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
-    
-    return pd.DataFrame(signal, columns=['HullMA_' + str(n)])
+    # 指定返回的Series对象的名称
+    hullma.name = 'HullMA_' + str(n)
+    return hullma.dropna()
 
 # 计算RSI指标，参数有2，一个为数据源，另一个为日期，一般为14，即RSI(data, 14)
 def RSI(data, n):
@@ -254,13 +241,7 @@ def RSI(data, n):
     ema_down = down.ewm(alpha=1/n, adjust=False).mean()
     rs = ema_up / ema_down
     rsi = 100 - 100 / (1 + rs)
-
-    rsi_prev = rsi.shift(1)  # 前一个周期的RSI
-    buy_signal = (rsi < 30) & (rsi > rsi_prev)
-    sell_signal = (rsi > 70) & (rsi < rsi_prev)
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
-    
-    return pd.DataFrame({'RSI_' + str(n): signal})
+    return pd.Series(rsi, index=data.index, name='RSI_' + str(n)).dropna()
 
 # 计算Stochastic，k是主线，d_signal是信号线，参数有4，一个是数据源，另外三个为日期，一般为STOK(data, 14, 3, 3)
 def STOK(data, n, m, t):
@@ -274,18 +255,15 @@ def STOK(data, n, m, t):
     d = k.rolling(m).mean()
     # 使用t天的滚动平均计算%D_signal值
     d_signal = d.rolling(t).mean()
-
-    main_line = d
-    signal_line = d_signal
-    main_line_prev = d.shift(1)
-    signal_line_prev = d_signal.shift(1)
-
-    buy_signal = (main_line < 20) & (main_line_prev < signal_line_prev) & (main_line > signal_line)
-    sell_signal = (main_line > 80) & (main_line_prev > signal_line_prev) & (main_line < signal_line)
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
     
-    return pd.DataFrame({'STOK_' + str(n): signal})
-
+    # 创建一个新的DataFrame来存储结果
+    result = pd.DataFrame({
+        'Stochastic_%K': k,
+        'Stochastic_%D': d,
+        'Stochastic_%D_signal': d_signal
+    }, index=data.index)  # 使用原始数据的索引
+    
+    return result.dropna()
 
 
 # 计算CCI指标，参数有2，一个是数据源，另一个是日期，一般为20，即CCI(data, 20)
@@ -294,110 +272,55 @@ def CCI(data, n):
     MA = TP.rolling(n).mean()
     MD = TP.rolling(n).apply(lambda x: np.abs(x - x.mean()).mean())
     CCI = (TP - MA) / (0.015 * MD)
-
-    CCI_prev = CCI.shift(1) # 前一个周期的CCI
-    
-    buy_signal = (CCI < -100) & (CCI > CCI_prev)    # 买入信号
-    sell_signal = (CCI > 100) & (CCI < CCI_prev)    # 卖出信号
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
-    
-    return pd.DataFrame({'CCI_' + str(n): signal})
+    return pd.Series(CCI, index=data.index, name='CCI_' + str(n)).dropna()
 
 
 # 平均趋向指数ADX(14)，参数有2，一个是数据源，另一个是日期，一般为14，即ADX(data,14)
 def ADX(data, n):
-    # 计算当前最高价与前一天最高价的差值，以及前一天最低价与当前最低价的差值
     up = data['high'] - data['high'].shift(1)
     down = data['low'].shift(1) - data['low']
-
-    # 判断哪些是上涨天，哪些是下跌天
-    plusDM = np.where((up > down) & (up > 0), up, 0)
-    minusDM = np.where((down > up) & (down > 0), down, 0)
-
-    # 计算真实波幅
+    plusDM = pd.Series(np.where((up > down) & (up > 0), up, 0))
+    minusDM = pd.Series(np.where((down > up) & (down > 0), down, 0))
     truerange = np.maximum(data['high'] - data['low'], np.maximum(np.abs(data['high'] - data['close'].shift()), np.abs(data['low'] - data['close'].shift())))
-    
-    # 计算+DI和-DI
-    plus = 100 * pd.Series(plusDM).ewm(alpha=1/n, min_periods=n).mean() / pd.Series(truerange).ewm(alpha=1/n, min_periods=n).mean()
-    minus = 100 * pd.Series(minusDM).ewm(alpha=1/n, min_periods=n).mean() / pd.Series(truerange).ewm(alpha=1/n, min_periods=n).mean()
-
-    # 计算ADX
-    adx = 100 * (np.abs(plus - minus) / (plus + minus)).ewm(alpha=1/n, min_periods=n).mean()
-
-    # 根据您给出的条件定义买入和卖出信号
-    adx_plusDI = (adx > 20) & (plus > minus) & (plus.shift(1) < minus.shift(1))
-    adx_minusDI = (adx > 20) & (plus < minus) & (plus.shift(1) > minus.shift(1))
-
-    # 计算信号值：买入为1，卖出为-1，中立为0
-    signal = np.where(adx_plusDI, 1, np.where(adx_minusDI, -1, 0))
-
-    # 返回包含所有历史数据的DataFrame
-    return pd.DataFrame({'ADX_' + str(n): signal})
+    plus = 100 * plusDM.ewm(alpha=1/n, min_periods=n).mean() / truerange.ewm(alpha=1/n, min_periods=n).mean()
+    minus = 100 * minusDM.ewm(alpha=1/n, min_periods=n).mean() / truerange.ewm(alpha=1/n, min_periods=n).mean()
+    sum = plus + minus
+    adx = 100 * (np.abs(plus - minus) / np.where(sum == 0, 1, sum)).ewm(alpha=1/n, min_periods=n).mean()
+    return pd.Series(adx, index=data.index, name='ADX').dropna()
 
 
 # 计算动量震荡指标(AO)，参数只有一个，即数据源
 def AO(data):
-    # 计算Awesome Oscillator（AO）
     AO = (data['high'].rolling(5).mean() + data['low'].rolling(5).mean()) / 2 - (data['high'].rolling(34).mean() + data['low'].rolling(34).mean()) / 2
-
-    # 定义茶碟形买入的条件
-    AO_plus_saucer = (AO.shift(2) < AO.shift(1)) & (AO.shift(1) < AO) & (AO > 0)
-    # 定义向上穿过零线的条件
-    AO_plus_cross = (AO.shift(1) < 0) & (AO > 0)
-
-    # 定义茶碟形卖出的条件
-    AO_minus_saucer = (AO.shift(2) > AO.shift(1)) & (AO.shift(1) > AO) & (AO < 0)
-    # 定义向下穿过零线的条件
-    AO_minus_cross = (AO.shift(1) > 0) & (AO < 0)
-
-    # 根据条件计算买入、卖出和中立的信号
-    signal = np.where(AO_plus_saucer | AO_plus_cross, 1, np.where(AO_minus_saucer | AO_minus_cross, -1, 0))
-
-    # 返回包含所有历史数据的DataFrame
-    return pd.DataFrame({'AO': signal
-    })
-
+    # 指定返回的Series对象的索引为原始data的索引，并命名为'AO'
+    return pd.Series(AO, index=data.index, name='AO').dropna()
 
 
 # 计算动量指标(10)，参数只有一个，即数据源
 def MTM(data):
-    # 计算MTM值：当前收盘价与10天前的收盘价之差
     MTM = data['close'] - data['close'].shift(10)
-    
-    # 根据MTM值的变化确定信号
-    # MTM值上升时，信号为1（买入）
-    # MTM值下跌时，信号为-1（卖出）
-    # MTM值无变化时，信号为0（中立）
-    signal = np.where(MTM > MTM.shift(1), 1, np.where(MTM < MTM.shift(1), -1, 0))
-    
-    # 返回包含所有历史数据的DataFrame
-    return pd.DataFrame({'MTM': signal})
+    # 指定返回的Series对象的索引为原始data的索引
+    return pd.Series(MTM, index=data.index, name='MTM').dropna()
 
-# MACD_1是以金叉和死叉进行判断，参数有3个，第一个是数据源，其余两个为日期，一般取12和26，即MACD(data, 12,26)
+# 计算MACD Lvel指标，参数有3个，第一个是数据源，其余两个为日期，一般取12和26，即MACD_Level(data, 12,26)
 def MACD_Level(data, n_fast, n_slow):
-     # 计算快速EMA
     EMAfast = data['close'].ewm(span=n_fast, min_periods=n_slow).mean()
-    
-    # 计算慢速EMA
     EMAslow = data['close'].ewm(span=n_slow, min_periods=n_slow).mean()
-    
-    # 计算MACD值，即快速EMA与慢速EMA之差
     MACD = EMAfast - EMAslow
-    
-    # 计算MACD的信号线值
     MACDsignal = MACD.ewm(span=9, min_periods=9).mean()
+    MACDhist = MACD - MACDsignal
     
-    # 根据MACD和其信号线值确定信号
-    # 主线值 > 信号线值时，信号为1（买入）
-    # 主线值 < 信号线值时，信号为-1（卖出）
-    # 主线值等于信号线值时，信号为0（中立）
-    signal = np.where(MACD > MACDsignal, 1, np.where(MACD < MACDsignal, -1, 0))
+    # 创建一个新的DataFrame来存储结果
+    result = pd.DataFrame({
+        'MACD': MACD,
+        'MACDsignal': MACDsignal,
+        'MACDhist': MACDhist
+    }, index=data.index)  # 使用原始数据的索引
     
-    # 返回包含所有历史数据的DataFrame
-    return pd.DataFrame({'MACD': signal})
+    return result.dropna()
 
 # 计算Stoch_RSI(data,3, 3, 14, 14)，有5个参数，第1个为数据源
-def Stoch_RSI(data, smoothK=3, smoothD=3, lengthRSI=14, lengthStoch=14):
+def Stoch_RSI(data, smoothK, smoothD, lengthRSI, lengthStoch):
     # 计算RSI
     lc = data['close'].shift(1)
     diff = data['close'] - lc
@@ -407,121 +330,287 @@ def Stoch_RSI(data, smoothK=3, smoothD=3, lengthRSI=14, lengthStoch=14):
     ema_down = down.ewm(alpha=1/lengthRSI, adjust=False).mean()
     rs = ema_up / ema_down
     rsi = 100 - 100 / (1 + rs)
-    
     # 计算Stochastic
     stoch = (rsi - rsi.rolling(window=lengthStoch).min()) / (rsi.rolling(window=lengthStoch).max() - rsi.rolling(window=lengthStoch).min())
-    k = stoch.rolling(window=smoothK).mean()*100
+    k = stoch.rolling(window=smoothK).mean() * 100
     d = k.rolling(window=smoothD).mean()
     
-    # 判断趋势：1为上升，-1为下降
-    trend = (data['close'] > data['close'].rolling(window=10).mean()).astype(int)
-    trend[trend == 0] = -1
+    # 创建一个新的DataFrame来存储结果
+    result = pd.DataFrame({
+        'Stoch_RSI_K': k,
+        'Stoch_RSI_D': d
+    }, index=data.index)  # 使用原始数据的索引
     
-    # 根据Stochastic RSI的K线和D线确定买入、卖出信号
-    buy_signal = (trend == -1) & (k < 20) & (d < 20) & (k > d) & (k.shift(1) <= d.shift(1))
-    sell_signal = (trend == 1) & (k > 80) & (d > 80) & (k < d) & (k.shift(1) >= d.shift(1))
-    
-    # 根据信号赋值：1为买入，-1为卖出，0为中立
-    signal = np.where(buy_signal, 1, np.where(sell_signal, -1, 0))
-    
-    return pd.DataFrame({'Stoch_RSI': signal})
+    return result.dropna()
 
 # 计算威廉百分比变动，参数有2，第1是数据源，第二是日期，一般为14，即WPR(data, 14)
 def WPR(data, n):
-    # 计算WPR（Williams %R）值
-    WPR = pd.Series((data['high'].rolling(n).max() - data['close']) / 
-                    (data['high'].rolling(n).max() - data['low'].rolling(n).min()) * -100, 
-                    name='WPR_' + str(n))
-    
-    # 设置上下轨
-    lower_band = -80
-    upper_band = -20
-    
-    # 根据WPR值和上下轨确定买卖信号
-    # 当WPR < 下轨且正在上升时，信号为1（买入）
-    # 当WPR > 上轨且正在下跌时，信号为-1（卖出）
-    # 否则，信号为0（中立）
-    signal = np.where((WPR < lower_band) & (WPR > WPR.shift(1)), 1, 
-                      np.where((WPR > upper_band) & (WPR < WPR.shift(1)), -1, 0))
-
-    # 返回包含所有历史数据的DataFrame
-    return pd.DataFrame({'WPR_' + str(n):  signal})
+    WPR = pd.Series((data['high'].rolling(n).max() - data['close']) / (data['high'].rolling(n).max() - data['low'].rolling(n).min()) * -100, name='WPR_' + str(n))
+    return WPR.dropna()
 
 
 # 计算Bull Bear Power牛熊力量(BBP)，参数有2，一个是数据源，另一个是日期，一般为20，但在tradingview取13，即BBP(data, 13)
 def BBP(data, n):
-    # 计算牛市力量（BullPower）和熊市力量（BearPower）
     bullPower = data['high'] - data['close'].ewm(span=n).mean()
     bearPower = data['low'] - data['close'].ewm(span=n).mean()
-    
-    # 计算BBP值
     BBP = bullPower + bearPower
-    
-    # 计算n天的移动平均值
-    moving_avg = data['close'].rolling(window=n).mean()
-
-    # 确定股价趋势：1表示上升，-1表示下降，0表示无明显趋势
-    trend = np.where(data['close'] > moving_avg, 1, 
-                     np.where(data['close'] < moving_avg, -1, 0))
-
-    
-    # 根据牛市力量、熊市力量和股价趋势来决定买卖信号
-    signal = np.where((trend == 1) & (bearPower < 0) & (bearPower > bearPower.shift(1)), 1, 
-                      np.where((trend == -1) & (bullPower > 0) & (bullPower < bullPower.shift(1)), -1, 0))
-    
-    # 返回BBP值和买卖信号的DataFrame
-    return pd.DataFrame({'BBP' : signal})
+    return pd.Series(BBP, index=data.index, name='BBP').dropna()
 
 
 # 计算Ultimate Oscillator终极震荡指标UO (data,7, 14, 28)，有4个参数，第1个是数据源，其他的是日期
 def UO(data, n1, n2, n3):
-    # 计算前一天的收盘价和今天的最低价中的最小值
     min_low_or_close = pd.concat([data['low'], data['close'].shift(1)], axis=1).min(axis=1)
-    
-    # 计算前一天的收盘价和今天的最高价中的最大值
     max_high_or_close = pd.concat([data['high'], data['close'].shift(1)], axis=1).max(axis=1)
-    
-    # 计算买入压力
     bp = data['close'] - min_low_or_close
-    
-    # 计算真实范围
     tr_ = max_high_or_close - min_low_or_close
-    
-    # 计算不同时间范围内的平均买入压力和真实范围的比值
     avg7 = bp.rolling(n1).sum() / tr_.rolling(n1).sum()
     avg14 = bp.rolling(n2).sum() / tr_.rolling(n2).sum()
     avg28 = bp.rolling(n3).sum() / tr_.rolling(n3).sum()
-    
-    # 计算终极指标UO
     UO = 100 * ((4 * avg7) + (2 * avg14) + avg28) / 7
-    
-    # 生成信号
-    # UO > 70，生成买入信号1
-    # UO < 30，生成卖出信号-1
-    # 其他情况，生成中立信号0
-    signal = np.where(UO > 70, 1, np.where(UO < 30, -1, 0))
-    
-    return pd.DataFrame({'UO': signal})
+    return pd.Series(UO, index=data.index, name='UO').dropna()
 
 
 # 计算线性回归
-def linear_regression_dfcf(data, years_list):
+def linear_regression_dfcf(data, days_list):
     df_list = []
-    for many_years in years_list:
-        percent = round(len(data) / 7 * many_years)
-        y = data.iloc[-percent:]['close'].values # 使用 'close' 列
-        x = np.arange(len(y))
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-        expected_value = intercept + slope * len(y)
-        residuals = y - (intercept + slope * x)
-        std_residuals = np.std(residuals)
+    for many_days in days_list:
+        # 使用 rolling 函数创建滚动窗口
+        expected_values = (
+            data['close']
+            .rolling(window=many_days)
+            .apply(lambda y: stats.linregress(np.arange(len(y)), y)[1] + stats.linregress(np.arange(len(y)), y)[0] * (len(y) - 1), raw=True)
+        )
+        # 计算滚动窗口的残差标准差
+        std_residuals = (
+            data['close']
+            .rolling(window=many_days)
+            .apply(lambda y: np.std(y - (stats.linregress(np.arange(len(y)), y)[1] + stats.linregress(np.arange(len(y)), y)[0] * np.arange(len(y)))), raw=True)
+        )
 
-        columns = [f"expected_value_{many_years}year", f"std_residuals_{many_years}year"]
-        result_data = [expected_value, std_residuals]
-        result_df = pd.DataFrame(data=[result_data], columns=columns)
+        # 创建新的 DataFrame
+        temp_df = pd.DataFrame({
+            f"expected_value_{many_days}day": expected_values,
+            f"std_residuals_{many_days}day": std_residuals
+        })
+        df_list.append(temp_df)
 
-        df_list.append(result_df)
     result = pd.concat(df_list, axis=1)
 
     return result
+
+
+# 通过东方财富api获取K线数据，参数包括股票代码，天数，复权类型，K线类型
+# `klt`：K 线周期，可选值包括 5（5 分钟 K 线）、15（15 分钟 K 线）、30（30 分钟 K 线）、60（60 分钟 K 线）、101（日 K 线）、102（周 K 线）、103（月 K 线）等。
+# `fqt`：复权类型，可选值包括 0（不复权）、1（前复权）、2（后复权）。
+def json_to_dfcf(stock_code, days=365, fqt=1, klt=101):
+    if stock_code.endswith("SH"):
+        stock_code = "1." + stock_code[:-3]
+    else:
+        stock_code = "0." + stock_code[:-3]
+    try:
+        today = datetime.now().date()
+        start_time = (today - timedelta(days=days)).strftime("%Y%m%d")
+        end_date = today.strftime('%Y%m%d')
+        url = f'http://push2his.eastmoney.com/api/qt/stock/kline/get?&secid={stock_code}&fields1=f1,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&&fqt={fqt}&beg={start_time}&end={end_date}'
+        response = requests.get(url)
+        response.raise_for_status()  # 检查请求是否成功
+        data = response.json()
+        data = [x.split(',') for x in data['data']['klines']]
+        column_names = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']
+        df = pd.DataFrame(data, columns=column_names)
+
+        # 将数值列转换为 float 类型，处理 NaN
+        for col in ['open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'percentage change', 'change amount', 'turnover rate']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df.ffill(inplace=True)  # 向前填充 NaN
+
+        return df
+    except requests.exceptions.RequestException as e:
+        print(f"网络请求错误: {e}")
+        return None
+    except Exception as e:
+        print(f"发生异常: {e}")
+        return None
+    
+
+
+# 从东财获取8年数据，计算各种指标指标，参数为股票代码
+def generate_stat_data(stock_code):
+    data = json_to_dfcf(stock_code, days=365*8, fqt=1, klt=101)
+
+    ma10 = MA(data, 10)
+    ma20 = MA(data, 20)
+    ma30 = MA(data, 30)
+    ma50 = MA(data, 50)
+    ma100 = MA(data, 100)
+    ma200 = MA(data, 200)
+
+    ema10 = EMA(data, 10)
+    ema20 = EMA(data, 20)
+    ema30 = EMA(data, 30)
+    ema50 = EMA(data, 50)
+    ema100 = EMA(data, 100)
+    ema200 = EMA(data, 200)
+
+    ic = ichimoku_cloud(data,9, 26, 52, 26)
+
+    vwma = VWMA(data, 20)
+
+    hm = HullMA(data, 9)
+
+    rsi = RSI(data, 14)
+
+    wpr = WPR(data, 14)
+
+    cci = CCI(data, 20)
+
+    adx = ADX(data, 14)
+
+    stok = STOK(data, 14, 3, 3)
+
+    ao = AO(data)
+
+    mtm = MTM(data)
+
+    madc_level = MACD_Level(data, 12, 26)
+
+    stoch_rsi = Stoch_RSI(data, 3, 3, 14, 14)
+
+    bbp = BBP(data, 13)
+
+    uo = UO(data, 7, 14, 28)
+
+    lr = linear_regression_dfcf(data, [10, 20, 60, 120])
+
+    stat_data = pd.concat([data, ma10, ma20, ma30, ma50, ma100, ma200, ema10, ema20, ema30, ema50, ema100, ema200, ic, vwma, hm, rsi,  cci, adx, wpr, stok, ao, mtm, madc_level, stoch_rsi, bbp, uo, lr], axis=1) 
+
+    # 获取众120个数据之后的数据，因为线性回归计算的最长的一个日期是120交易日
+    stat_data_after_120 = stat_data.iloc[119:]
+    return stat_data_after_120
+
+
+# 从mt5获取8年数据，计算各种指标指标，参数为股票代码
+def generate_stat_data_mt5(stock_code):
+    data = mic.get_mt5_data(stock_code)
+
+    ma10 = MA(data, 10)
+    ma20 = MA(data, 20)
+    ma30 = MA(data, 30)
+    ma50 = MA(data, 50)
+    ma100 = MA(data, 100)
+    ma200 = MA(data, 200)
+
+    ema10 = EMA(data, 10)
+    ema20 = EMA(data, 20)
+    ema30 = EMA(data, 30)
+    ema50 = EMA(data, 50)
+    ema100 = EMA(data, 100)
+    ema200 = EMA(data, 200)
+
+    ic = ichimoku_cloud(data,9, 26, 52, 26)
+
+    vwma = VWMA(data, 20)
+
+    hm = HullMA(data, 9)
+
+    rsi = RSI(data, 14)
+
+    wpr = WPR(data, 14)
+
+    cci = CCI(data, 20)
+
+    adx = ADX(data, 14)
+
+    stok = STOK(data, 14, 3, 3)
+
+    ao = AO(data)
+
+    mtm = MTM(data)
+
+    madc_level = MACD_Level(data, 12, 26)
+
+    stoch_rsi = Stoch_RSI(data, 3, 3, 14, 14)
+
+    bbp = BBP(data, 13)
+
+    uo = UO(data, 7, 14, 28)
+
+    lr = linear_regression_dfcf(data, [10, 20, 60, 120])
+
+    stat_data = pd.concat([data, ma10, ma20, ma30, ma50, ma100, ma200, ema10, ema20, ema30, ema50, ema100, ema200, ic, vwma, hm, rsi,  cci, adx, wpr, stok, ao, mtm, madc_level, stoch_rsi, bbp, uo, lr], axis=1) 
+
+    # 获取众120个数据之后的数据，因为线性回归计算的最长的一个日期是120交易日
+    stat_data_after_120 = stat_data.iloc[119:]
+    return stat_data_after_120
+
+
+# 计算xirr年化收益率
+def calculate_xirr(cash_flows, dates):
+    dates = [pd.to_datetime(date) for date in dates]
+    if len(cash_flows) == 0 or len(cash_flows) != len(dates):
+        return -1
+    years = np.array([(d - dates[0]).days / 365.0 for d in dates])
+    
+    def f(r):
+        with np.errstate(all='ignore'):
+            try:
+                return np.sum(cash_flows / (1 + r) ** years)
+            except FloatingPointError:
+                return np.inf
+
+    try:
+        result = optimize.newton(f, x0=0.1, tol=1e-6, maxiter=1000)
+        return result if -1 < result < 1e10 else -1
+    except (RuntimeError, OverflowError, FloatingPointError):
+        return -1
+
+# 计算年化收益率、现金流之和和净现值
+def calculate_annual_return(table_name):
+    db_path = r"D:\wenjian\python\smart\data\guojin_account.db"
+    conn = sqlite3.connect(db_path)
+
+    # 使用增加了"_hedge"后缀的表名
+    table_name_hedge = f"{table_name}_hedge"
+    query = f"SELECT 成交时间, 成交金额, 买卖 FROM {table_name_hedge}"
+    data = pd.read_sql_query(query, conn)
+
+    conn.close()
+
+    # 将成交时间转换为日期格式
+    data['成交时间'] = pd.to_datetime(data['成交时间'])
+
+    # 计算现金流
+    data['现金流'] = -data['成交金额'] * data['买卖']
+
+    # 计算年化收益率
+    annual_return = calculate_xirr(data['现金流'].values, data['成交时间'].values)
+
+    # 计算“现金流”的和
+    cash_flows_sum = data['现金流'].sum()
+
+    # 计算净现值
+    discount_rate = 0.1  # 折现率设为5%
+    periods = (data['成交时间'] - data['成交时间'].min()).dt.days / 365.25  # 计算每笔现金流的时间（以年为单位）
+    npv = sum(data['现金流'] / (1 + discount_rate) ** periods)
+
+    # 创建一个新的DataFrame来返回结果
+    result = pd.DataFrame({
+        '年化收益率': [annual_return],
+        '现金流之和': [cash_flows_sum],
+        '净现值': [npv]
+    })
+
+    return result
+
+
+
+
+
+
+
+
+
+
+
+
 

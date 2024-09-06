@@ -16,6 +16,9 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import baostock as bs
 from pytdx.hq import TdxHq_API
+import global_functions as gf
+from pandas import Series, DataFrame
+from typing import List
 
 # 获取金融数据文件
 
@@ -133,6 +136,66 @@ def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
     except Exception as e:
         return f"An exception occurred: {str(e)}"
 
+# 通过qmt获取证券的7年K线历史数据，不包数据下载补充
+def qmt_data_source(stock_code, days=7*365):
+
+    # 计算7年前的日期
+    start_time = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d")
+    # xtdata.download_history_data2([stock_code], period='1d', start_time=start_time, callback=on_progress)
+
+    field_list = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'settelementPrice', 'openInterest', 'preClose', 'suspendFlag']
+    
+    # 从新的数据源获取数据
+    data = xtdata.get_market_data(field_list, [stock_code], period='1d', start_time=start_time, count=-1, dividend_type='front', fill_data=True)
+    
+    # 转置每个字段并连接在一起
+    data_transposed = pd.concat([data[field].T for field in field_list], axis=1)
+    data_transposed.columns = field_list
+    data_transposed.reset_index(drop=True, inplace=True) # 重置索引
+    
+    # 将时间戳转换为日期字符串
+    data_transposed['time'] = pd.to_datetime(data_transposed['time'], unit='ms') + pd.Timedelta(hours=8) # 加上时区偏移
+    data_transposed['time'] = data_transposed['time'].dt.strftime('%Y-%m-%d')
+    
+    return data_transposed
+
+
+# 获取国金qmt行情数据的补充数据
+def on_progress(data):
+    '''补充历史数据回调函数'''
+    print(data) 
+
+# 通过qmt获取证券的7年K线历史数据，包含数据下载补充
+def qmt_data_source_download(stock_code, days=7*365):
+
+    # 计算7年前的日期
+    start_time = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d")
+    xtdata.download_history_data2([stock_code], period='1d', start_time=start_time, callback=on_progress)
+
+    field_list = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'settelementPrice', 'openInterest', 'preClose', 'suspendFlag']
+    
+    # 从新的数据源获取数据
+    data = xtdata.get_market_data(field_list, [stock_code], period='1d', start_time=start_time, count=-1, dividend_type='front', fill_data=True)
+    
+    # 转置每个字段并连接在一起
+    data_transposed = pd.concat([data[field].T for field in field_list], axis=1)
+    data_transposed.columns = field_list
+    data_transposed.reset_index(drop=True, inplace=True) # 重置索引
+    
+    # 将时间戳转换为日期字符串
+    data_transposed['time'] = pd.to_datetime(data_transposed['time'], unit='ms') + pd.Timedelta(hours=8) # 加上时区偏移
+    data_transposed['time'] = data_transposed['time'].dt.strftime('%Y-%m-%d')
+    
+    return data_transposed
+
+# 从国金qmt中获取指定代码的近7年行情数据
+def download_7_years_data(stock_list):
+    # 计算7年前的日期
+    start_time = (datetime.datetime.now() - datetime.timedelta(days=7*365)).strftime("%Y%m%d")
+
+    # 下载近7年的历史数据
+    xtdata.download_history_data2(stock_list, period='1d', start_time=start_time, callback=on_progress)
+    
 
 # 获取通达信的数据，参数有3个：服务器IP、服务器端口、函数
 def get_financial_data(server_ip, server_port, data_function):
@@ -250,6 +313,32 @@ def wencai_conditional_query(query):
         return pd.DataFrame()
 
 
+# 通过问财的问询方式爬取问财的数据
+def get_clean_data(question):
+    try:
+        data = pywencai.get(question=question, query_type='conbond', loop=True)
+        
+        # 查找列名中包含特定关键字的列并进行重命名
+        col_names_to_change = ["可转债代码", "可转债简称", "涨跌幅", "最新价", "正股代码", "正股简称", "纯债价值", "期权价值", "最新变动后余额", "转股溢价率", "满足强赎", "强赎天计数"]
+        for name in col_names_to_change:
+            col_name = [col for col in data.columns if name in col]
+            if col_name:
+                # 重命名列名
+                data.rename(columns={col_name[0]: name}, inplace=True)
+            else:
+                # 若未找到，则创建一个新的列，所有值都为空
+                data[name] = np.nan
+        
+        # 只保留指定的列
+        data = data[col_names_to_change]
+        return data
+    except Exception as e:
+        print(f"获取清洗后的数据时出错: {e}")
+        return pd.DataFrame()
+
+
+
+
 # 获取集思录的可转债强赎数据，并保存到数据库
 def filter_bond_cb_redeem_data_and_save_to_db():
     try:
@@ -317,6 +406,45 @@ def get_valuation_ratios(code):
 
     return ratios
 
+
+# 获取持仓和收盘价，从而获得整体的交易日期和现金流，然后保存到数据库到r"D:\wenjian\python\smart\data\guojin_account.db"
+def position_close_process_data(table_name):
+    db_path = r"D:\wenjian\python\smart\data\guojin_account.db"
+    conn = sqlite3.connect(db_path)
+
+    query = f"SELECT * FROM {table_name}"
+    data_from_db = pd.read_sql_query(query, conn)
+
+    conn.close()
+
+    data = gf.calculate_unhedged_transactions(db_path, [table_name])
+
+    for index, row in data.iterrows():
+        market_data = json_to_dfcf_qmt(row['证券代码'], 5)
+        close_price = market_data['close'].iloc[-1]
+        data.at[index, '成交时间'] = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+        data.at[index, '成交均价'] = close_price
+        data.at[index, '成交金额'] = close_price * row['成交数量']
+        data.at[index, '买卖'] = -1
+
+    merged_data = pd.concat([data_from_db, data], ignore_index=True)
+
+    # 创建新的数据库连接
+    new_db_path = r"D:\wenjian\python\smart\data\guojin_account.db"
+    new_conn = sqlite3.connect(new_db_path)
+
+    # 新表名为原表名加"_hedge"
+    new_table_name = f"{table_name}_hedge"
+
+
+    # 将merged_data保存到新的数据库
+    merged_data.to_sql(new_table_name, new_conn, if_exists='replace', index=False)
+    
+
+    # 关闭新的数据库连接
+    new_conn.close()
+
+    return merged_data
 
 # 获取mt5中的行情数据，参数有3个：品种（必要），时间框架，天数。
 def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
@@ -422,10 +550,88 @@ def save_exchange_rates_to_db(db_path, table_name):
     print("汇率数据已经成功保存到数据库表：" + table_name)
 
 
+# 从QMT获得行情数据，筛选出符合条件的标的数据
+def get_snapshot(code_list: List[str]):
+    # 获取标的快照数据
+    df = xtdata.get_full_tick(code_list)
+    df = DataFrame.from_dict(df).T.reset_index().rename(columns={'index': '证券代码'})
+
+    # 计算标的均价
+    bidPrice_columns = ['bid1', 'bid2', 'bid3', 'bid4', 'bid5']
+    askPrice_columns = ['ask1', 'ask2', 'ask3', 'ask4', 'ask5']
+    df[bidPrice_columns] = df['bidPrice'].apply(Series, index=bidPrice_columns)
+    df[askPrice_columns] = df['askPrice'].apply(Series, index=askPrice_columns)
+
+    # 对可能需要转换为float的列进行转换
+    float_columns = ['bid1', 'bid2', 'bid3', 'bid4', 'bid5', 'ask1', 'ask2', 'ask3', 'ask4', 'ask5', 'amount', 'lastClose', 'volume']
+    for col in float_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df['averagePrice'] = (df['bid1'] + df['ask1']) / 2              # 求买1和卖1的平均价
+    df.loc[(df['bid1'] == 0) | (df['ask1'] == 0), 'averagePrice'] = df['bid1'] + df['ask1'] # 涨跌停修正
+
+    df.rename(columns={'averagePrice': 'close', 'lastClose': 'pre_close', 'volume': 'vol'}, inplace=True)
+    df['amount'] = df['amount'] / 1e4
+    df = df[(df.close != 0) & (df.high != 0)] # 现价大于1的标的
+
+    # 计算衍生指标
+    df['pct_chg'] = ((df.close / df.pre_close - 1) * 100)   # 今日涨跌幅（%）
+    df['max_pct_chg'] = ((df.high / df.pre_close - 1) * 100)    # 最大涨跌幅（%）
+
+    # 展示列,分别表示：代码、买1和卖1平均价、今日涨跌幅（%）、最大涨跌幅（%）、最高价、最低价、昨收价、成交量、成交额（万元）
+    display_columns = ['证券代码', 'close', 'pct_chg', 'max_pct_chg', 'high', 'low', 'pre_close', 'vol', 'amount']
+    df = df[display_columns]
+    return df
 
 
+# 读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，最后打印合并后的数据。
+def process_and_merge_data(db_path: str, table_name: str, acc: str):
+    """
+    读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，
+    并将行情数据与原始表数据以及持仓数据合并，最后打印合并后的数据。
 
+    :param db_path: 数据库文件的路径。
+    :param table_name: 读取证券代码的数据表名称。
+    :param acc: 账户标识符。
+    """
+    try:
+        xt_trader = None
+        # 连接到数据库
+        conn = sqlite3.connect(db_path)
 
+        # 从数据库读取证券代码
+        query = f"SELECT 证券代码 FROM {table_name}"
+        strategy_data = pd.read_sql_query(query, conn)
+
+        if strategy_data is None or strategy_data.empty:
+            # print('没有可用数据')
+            return
+
+        # 重新读取完整的数据表
+        complete_strategy_data = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+
+        # 获取行情数据
+        codes = strategy_data['证券代码'].tolist()
+        market_data = get_snapshot(codes)  # 确保这个函数返回一个包含'证券代码'列的DataFrame
+
+        # 获取所有持仓信息
+        positions = xt_trader.query_stock_positions(acc)  # 获取所有持仓
+        positions_data = pd.DataFrame([{'证券代码': pos.stock_code, '持仓量': pos.volume} for pos in positions])
+
+        # 合并策略数据和行情数据
+        merged_data = pd.merge(complete_strategy_data, market_data, on='证券代码', how='left')
+        # 再将持仓数据合并到已有的合并数据中
+        final_merged_data = pd.merge(merged_data, positions_data, on='证券代码', how='left')
+
+        # 打印合并后的数据
+        # print(final_merged_data)
+        return final_merged_data
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        # 关闭数据库连接
+        conn.close()
 
 
 
