@@ -15,6 +15,7 @@ import schedule
 import time
 from . import send_email as se
 import threading
+import global_functions as gf
 
 
 # qmt的委托、交易和推送文件
@@ -173,6 +174,40 @@ def calculate_remaining_holdings(db_path, strategy_tables):
     finally:
         # 无论是否出现异常，都关闭数据库连接
         conn.close()
+
+
+# 当为卖出时插入的数据，参数包括数据表名、证券代码、委托价格、委托数量、买卖方向、策略名称、委托备注
+def insert_buy_sell_data(place_order_table, security_code, order_price, order_volume, trade_direction, strategy_name, order_remark):
+    try:
+        # 连接到 SQLite 数据库
+        conn = sqlite3.connect(db_path)
+
+        # 获取当前时间，精确到分钟
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        insert_query = f"""
+        INSERT INTO {place_order_table} (证券代码, 委托价格, 委托数量, 买卖, 策略名称, 委托备注, 日期时间)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        values = (
+            security_code,
+            order_price,
+            order_volume,
+            trade_direction,  # 1 表示买入，-1 表示卖出
+            strategy_name,
+            order_remark,
+            current_time,
+        )
+        conn.execute(insert_query, values)
+        conn.commit()
+        print(f"数据插入成功: {values}")
+    except Exception as e:
+        print(f"插入数据时出错: {e}")
+    finally:
+        # 无论是否出现异常，都关闭数据库连接
+        conn.close()
+
+
 
 # 证券委托，参数分别是：数据库路径、委托数据表名称、成交数据表名称、判断处函数前缀（不改动）、账号（不改动）
 # 注：报价类型主要有xtconstant.FIX_PRICE（限价）、xtconstant.LATEST_PRICE（最新介）、xtconstant.MARKET_PEER_PRICE_FIRST（对手方最优）、xtconstant.MARKET_MINE_PRICE_FIRST（本方最优）
