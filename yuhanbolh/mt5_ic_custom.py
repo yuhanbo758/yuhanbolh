@@ -15,6 +15,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import pywencai
 import random
+import global_functions as gf
 
 db_path = r'D:\wenjian\python\smart\data\mt5.db'
 

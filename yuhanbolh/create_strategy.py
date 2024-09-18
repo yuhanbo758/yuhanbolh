@@ -16,6 +16,7 @@ import random
 import os
 import schedule
 import time
+import global_functions as gf
 # 策略文件
 
 

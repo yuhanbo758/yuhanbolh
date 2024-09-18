@@ -7,6 +7,7 @@ from . import send_email as sm
 import schedule
 import sqlite3
 from datetime import datetime, timezone, timedelta, date
+import global_functions as gf
 # mt5交易委托文件
 
 

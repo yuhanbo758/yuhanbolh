@@ -19,6 +19,7 @@ from pytdx.hq import TdxHq_API
 import global_functions as gf
 from pandas import Series, DataFrame
 from typing import List
+import global_functions as gf
 
 # 获取金融数据文件
 

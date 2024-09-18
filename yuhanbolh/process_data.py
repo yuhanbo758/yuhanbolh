@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import pywencai
 from scipy import optimize
 import mt5_ic_custom as mic
+import global_functions as gf
 
 # 数据处理文件，主要为技术指标的计算
 
