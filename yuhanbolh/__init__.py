@@ -34,7 +34,6 @@ from .global_functions import (
     get_decimal_places,
     get_existing_data,
     open_positions,
-    position_close_process_data,
     process_data,
     save_to_database,
     sync_folders,
