@@ -16,11 +16,11 @@ from datetime import datetime, timedelta
 import pywencai
 import random
 
-db_path = r'D:\wenjian\python\smart\data\mt5.db'
+
 
 
 # 从问财网获取纳斯达克100指数成分股数据，参数查询语句，每年的1月1日运行一次，因为纳斯达克100指数成分股每年年底会有变化
-def wencai_conditional_query(query):
+def wencai_conditional_query_nz100(query):
     try:
         data = pywencai.get(query=query, query_type='usstock', loop=True)
         
@@ -976,12 +976,15 @@ def ex_fund_forex_valuation(db_path, table_name_guojin, table_name_result):
 
     return all_data
 
-if not mt5.initialize(path=r"D:\jiaoyi\IC-MT5-Demo\terminal64.exe", login=51455171, password="LiEbcs6r", server="ICMarketsSC-Demo"):
-    print("initialize()失败，错误代码=", mt5.last_error())
-else:
-    print("MT5 initialized")
-if __name__ == '__main__':
 
+if __name__ == '__main__':
+    db_path = r'D:\wenjian\python\smart\data\mt5.db'
+
+    if not mt5.initialize(path=r"D:\jiaoyi\IC-MT5-Demo\terminal64.exe", login=518655571, password="Li1233566", server="ICMarketsSC-Demo"):
+        print("initialize()失败，错误代码=", mt5.last_error())
+    else:
+        print("MT5 initialized")
+    
     get_valuation_ratios('AAPL')
 
     # 从问财网获取纳斯达克100指数成分股数据，参数查询语句，每年的1月1日运行一次，因为纳斯达克100指数成分股每年年底会有变化

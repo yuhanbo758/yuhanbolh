@@ -14,8 +14,6 @@ import time
 from . import send_email as se
 import threading
 
-
-
 # qmt的委托、交易和推送文件
 
 

@@ -1,7 +1,7 @@
 import smtplib
 from email.mime.text import MIMEText
-import global_functions as gf
-# 修改发送文件
+
+# 邮件发送文件
 
 # 批量自动化给订阅用户发送邮件，参数：发件人邮箱、发件人邮箱密码、收件人邮箱、邮件内容
 def send_email(sender_email, sender_password, receiver_email, error_message):

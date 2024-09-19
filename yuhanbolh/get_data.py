@@ -13,7 +13,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import baostock as bs
 from pytdx.hq import TdxHq_API
-import global_functions as gf
+from . import global_functions as gf
 from pandas import Series, DataFrame
 from typing import List
 
@@ -382,7 +382,7 @@ def get_valuation_ratios(code):
 
     # 获取大师价值线
     element_jzx = soup.select_one('#term-page-title').text.strip()
-    element_jzx = re.findall("\d+\.\d+", element_jzx)[0]
+    element_jzx = re.findall(r"\d+\.\d+", element_jzx)[0]
 
     # 获取名称
     element_mc = soup.select_one('html body div div main div:nth-child(1) div:nth-child(2) div:nth-child(1) div:nth-child(1) div:nth-child(2) div:nth-child(1) h1 span:nth-child(1)').text.strip()
