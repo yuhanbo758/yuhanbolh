@@ -28,6 +28,7 @@ from .get_data import (
 from .global_functions import (
     calculate_unhedged_transactions,
     calculate_unhedged_transactions_sbb,
+    calculate_stop_profit_loss,
     check_account,
     copy_table_to_mysql,
     copy_tables,
@@ -100,7 +101,6 @@ from .process_data import (
 from .qmt_trade import (
     MyXtQuantTraderCallback, 
     calculate_remaining_holdings,
-    calculate_stop_profit_loss,
     cancel_all_orders,
     insert_buy_sell_data,
     place_order_based_on_asset,
