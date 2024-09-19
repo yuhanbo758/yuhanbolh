@@ -11,7 +11,7 @@ from scipy import stats
 import math
 from datetime import datetime, timedelta
 from scipy import optimize
-import mt5_ic_custom as mic
+from . import mt5_ic_custom as mic
 
 
 # 数据处理文件，主要为技术指标的计算
