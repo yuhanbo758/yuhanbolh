@@ -20,7 +20,8 @@ from .get_data import (
     get_clean_data,
     get_snapshot,
     filter_bond_cb_redeem_data_and_save_to_db,
-    get_satisfy_redemption
+    get_satisfy_redemption,
+    wencai_conditional_query
 )
 
 # 全局函数
@@ -36,8 +37,7 @@ from .global_functions import (
     open_positions,
     process_data,
     save_to_database,
-    sync_folders,
-    wencai_conditional_query
+    sync_folders
 )
 
 
@@ -98,6 +98,7 @@ from .process_data import (
 
 # qmt的委托、交易和推送文件
 from .qmt_trade import (
+    MyXtQuantTraderCallback, 
     calculate_remaining_holdings,
     calculate_stop_profit_loss,
     cancel_all_orders,
@@ -116,7 +117,6 @@ from .qmt_trade import (
 
 
 # 邮件发送文件
-from .send_email import (
-    send_email
-)
+from .send_email import send_email
+
 
