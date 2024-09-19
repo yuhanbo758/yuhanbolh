@@ -1,13 +1,10 @@
 import pandas as pd
-import numpy as np
-import math
 import time
 import MetaTrader5 as mt5
 from . import send_email as sm
 import schedule
 import sqlite3
-from datetime import datetime, timezone, timedelta, date
-import global_functions as gf
+from datetime import datetime, timezone, timedelta
 # mt5交易委托文件
 
 

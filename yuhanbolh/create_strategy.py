@@ -12,11 +12,7 @@ from xtquant import xtdata
 from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
-import random
-import os
-import schedule
-import time
-import global_functions as gf
+
 # 策略文件
 
 

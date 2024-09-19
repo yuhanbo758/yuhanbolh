@@ -4,19 +4,15 @@ import re
 from bs4 import BeautifulSoup
 import pandas as pd
 import sqlite3
-import os
-import time
 import numpy as np
 import os
 import datetime
 from scipy import stats
 import math
-import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-import pywencai
 from scipy import optimize
 import mt5_ic_custom as mic
-import global_functions as gf
+
 
 # 数据处理文件，主要为技术指标的计算
 

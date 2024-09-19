@@ -5,10 +5,7 @@ import sqlite3
 import os
 import numpy as np
 from xtquant import xtdata
-from scipy import stats
-import math
 import requests
-import yfinance as yf
 import re
 import pywencai
 from bs4 import BeautifulSoup
@@ -19,7 +16,7 @@ from pytdx.hq import TdxHq_API
 import global_functions as gf
 from pandas import Series, DataFrame
 from typing import List
-import global_functions as gf
+
 
 # 获取金融数据文件
 

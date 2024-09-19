@@ -4,18 +4,16 @@ from xtquant.xttype import StockAccount
 from xtquant import xtconstant
 from xtquant import xtdata
 from datetime import datetime, timedelta
-import numpy as np
 import sqlite3
 import pandas as pd
 from typing import List
-from pandas import Series, DataFrame
 import random
 import os
 import schedule
 import time
 from . import send_email as se
 import threading
-import global_functions as gf
+
 
 
 # qmt的委托、交易和推送文件
