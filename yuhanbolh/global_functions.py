@@ -258,7 +258,7 @@ def calculate_stop_profit_loss(target_strategies, profit_multipliers, loss_multi
         conn.close()
 
 
-# 获取打地鼠策略的持仓数据
+# 获取打地鼠策略的持仓数据，参数是数据库路径和策略名称列表
 def generate_mole_strategy(db_path, strategies):
     try:
         df = open_positions(db_path)[['策略名称', '委托类型', '证券代码', '成交均价', '成交数量', '成交金额', '买卖']]

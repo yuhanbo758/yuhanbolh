@@ -12,6 +12,8 @@ import math
 from datetime import datetime, timedelta
 from scipy import optimize
 from . import mt5_ic_custom as mic
+from xtquant import xtdata
+import pywencai
 
 
 # 数据处理文件，主要为技术指标的计算
@@ -595,14 +597,342 @@ def calculate_annual_return(table_name):
 
     return result
 
+# 股票代码增加市场信息
+def get_processed_code(stock_code):
+    stock_code = str(stock_code)
+
+    if stock_code.startswith('6'):  # 沪市股票
+        market = 'SH'
+    elif stock_code.startswith('0') or stock_code.startswith('3'):  # 深市股票
+        market = 'SZ'
+    elif stock_code.startswith('11') or stock_code.startswith('113'):  # 沪市可转债
+        market = 'SH'
+    elif stock_code.startswith('12'):  # 深市可转债
+        market = 'SZ'
+    elif stock_code.startswith('50') or stock_code.startswith('51') or stock_code.startswith('58'):  # 沪市场内基金
+        market = 'SH'
+    elif stock_code.startswith('15') or stock_code.startswith('16') or stock_code.startswith('18'):  # 深市场内基金
+        market = 'SZ'
+    else:
+        return "轮动定时"
+
+    return f"{stock_code}.{market}"
+
+
+# 清洗execute_general_trade表
+def clean_execute_general_trade(conn):
+    """
+    清洗execute_general_trade表
+    """
+    cursor = conn.cursor()
+    # 从receive_condition获取(策略名称, 证券代码)的集合
+    cursor.execute("SELECT 策略名称, 证券代码 FROM receive_condition")
+    receive_keys = set(cursor.fetchall())
+    
+    # 获取execute_general_trade中非'问财轮动-注询问'的所有行
+    cursor.execute("SELECT rowid, 策略名称, 证券代码 FROM execute_general_trade WHERE 策略名称 != '问财轮动-注询问'")
+    rows = cursor.fetchall()
+    for rowid, strategy, code in rows:
+        if (strategy, code) not in receive_keys:
+            cursor.execute("DELETE FROM execute_general_trade WHERE rowid=?", (rowid,))
+    conn.commit()
+
+
+# 插入订单到place_general_order表
+def insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str):
+    """
+    插入订单到place_general_order表
+    """
+    cursor.execute("""
+        INSERT INTO place_general_order (证券代码, 委托价格, 委托数量, 买卖, 策略名称, 委托备注, 日期时间)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (code, price, quantity, buy_sell, strategy, remark, datetime_str))
+    conn.commit()
+
+
+# 删除receive_condition表中的行
+def delete_receive_condition_row(cursor, conn, rowid):
+    """
+    删除receive_condition表中的行
+    """
+    cursor.execute("DELETE FROM receive_condition WHERE rowid=?", (rowid,))
+    conn.commit()
+
+
+# 删除execute_general_trade表中的行
+def delete_execute_general_trade_row(cursor, conn, strategy, code):
+    """
+    删除execute_general_trade表中的行
+    """
+    cursor.execute("DELETE FROM execute_general_trade WHERE 策略名称=? AND 证券代码=?", (strategy, code))
+    conn.commit()
+
+
+# 处理价差网格策略
+def process_price_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid):
+    """
+    处理价差网格策略
+    """
+    lastPrice = tick.get('lastPrice')
+    if lastPrice is None:
+        return
+    委托备注_value = float(remark)
+    委托数量_value = quantity
+    # 查询execute_general_trade
+    cursor.execute("""
+        SELECT 成交均价, 成交数量, 买卖, 委托备注 FROM execute_general_trade
+        WHERE 策略名称=? AND 证券代码=?
+        ORDER BY rowid ASC
+    """, (strategy, code))
+    trade_rows = cursor.fetchall()
+    if not trade_rows:
+        if (price - 委托备注_value) >= lastPrice:
+            new_price = price - 委托备注_value
+            insert_order(cursor, conn, code, new_price, 委托数量_value, 1, strategy, remark, datetime_str)
+    else:
+        total_position = sum(row[1] * row[2] for row in trade_rows)
+        last_trade = trade_rows[-1]
+        last成交均价 = last_trade[0]
+        委托备注_value = float(last_trade[3])
+        if (last成交均价 - 委托备注_value) >= lastPrice:
+            new_price = last成交均价 - 委托备注_value
+            insert_order(cursor, conn, code, new_price, 委托数量_value, 1, strategy, remark, datetime_str)
+        elif (last成交均价 + 委托备注_value) <= lastPrice:
+            new_price = last成交均价 + 委托备注_value
+            if total_position >= 委托数量_value:
+                insert_order(cursor, conn, code, new_price, 委托数量_value, -1, strategy, remark, datetime_str)
+            elif total_position > 0:
+                insert_order(cursor, conn, code, new_price, total_position, -1, strategy, remark, datetime_str)
+            else:
+                pass  # 不做任何操作
+    # 不删除receive_condition表中的行
+
+# 处理振幅网格策略
+def process_amplitude_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid):
+    """
+    处理振幅网格策略
+    """
+    try:
+        lastPrice = tick.get('lastPrice')
+        if lastPrice is None:
+            return
+        
+        委托备注_value = float(remark)
+        委托数量_value = quantity
+        
+        cursor.execute("""
+            SELECT 成交均价, 成交数量, 买卖, 委托备注 FROM execute_general_trade
+            WHERE 策略名称=? AND 证券代码=?
+            ORDER BY rowid ASC
+        """, (strategy, code))
+        trade_rows = cursor.fetchall()
+        
+        if not trade_rows:
+            new_buy_price = price - 委托备注_value * price / 100
+            if new_buy_price >= lastPrice:
+                insert_order(cursor, conn, code, new_buy_price, 委托数量_value, 1, strategy, remark, datetime_str)
+        else:
+            total_position = sum(row[1] * row[2] for row in trade_rows)
+            last_trade = trade_rows[-1]
+            last成交均价 = last_trade[0]
+            委托备注_value = float(last_trade[3])
+            buy_price = last成交均价 - 委托备注_value * last成交均价 / 100
+            sell_price = last成交均价 + 委托备注_value * last成交均价 / 100
+            
+            if buy_price >= lastPrice:
+                insert_order(cursor, conn, code, buy_price, 委托数量_value, 1, strategy, remark, datetime_str)
+            elif sell_price <= lastPrice:
+                if total_position >= 委托数量_value:
+                    insert_order(cursor, conn, code, sell_price, 委托数量_value, -1, strategy, remark, datetime_str)
+                elif total_position > 0:
+                    insert_order(cursor, conn, code, sell_price, total_position, -1, strategy, remark, datetime_str)
+                else:
+                    pass  # 不做任何操作
+    except Exception as e:
+        # 捕获所有异常并打印错误信息
+        print(f"发生异常: {e}")
+        # 回滚事务以确保数据一致性
+        conn.rollback()
+        return None  # 返回 None 或其他适当的值以表示失败
+
+    # 不删除receive_condition表中的行
+
+
+# 处理监控策略
+def process_immediate_rows(rows, cursor, conn):
+    """
+    处理即时行数据
+    """
+    if not rows:
+        return
+    securities = list(set(row[1] for row in rows))  # row[1] 是 '证券代码'
+    tick_data = xtdata.get_full_tick(securities)
+    current_time = datetime.now()
+    for row in rows:
+        rowid, code, price, quantity, buy_sell, strategy, remark, datetime_str = row
+        # 处理'日期时间'
+        if datetime_str:
+            row_time = datetime.strptime(datetime_str, "%Y%m%d %H:%M")
+            if current_time > row_time:
+                cursor.execute("DELETE FROM receive_condition WHERE rowid=?", (rowid,))
+                conn.commit()
+                # 删除对应的execute_general_trade行
+                cursor.execute("DELETE FROM execute_general_trade WHERE 策略名称=? AND 证券代码=?", (strategy, code))
+                conn.commit()
+                continue
+        # 获取tick数据
+        tick = tick_data.get(code, {})
+        if not tick:
+            continue  # 如果没有tick数据，跳过
+        lastPrice = tick.get('lastPrice')
+        high = tick.get('high')
+        low = tick.get('low')
+        lastClose = tick.get('lastClose')
+        volume = tick.get('volume')
+        bidVol1 = tick.get('bidVol')[0]  # 买一量
+        askVol1 = tick.get('askVol')[0]  # 卖一量
+        if strategy == '即时委托':
+            insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str)
+            cursor.execute("DELETE FROM receive_condition WHERE rowid=?", (rowid,))
+            conn.commit()
+            # 删除对应的execute_general_trade行
+            cursor.execute("DELETE FROM execute_general_trade WHERE 策略名称=? AND 证券代码=?", (strategy, code))
+            conn.commit()
+        elif strategy == '上破价':
+            if lastPrice >= price:
+                insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str)
+                delete_receive_condition_row(cursor, conn, rowid)
+                delete_execute_general_trade_row(cursor, conn, strategy, code)
+        elif strategy == '下破价':
+            if lastPrice <= price:
+                insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str)
+                delete_receive_condition_row(cursor, conn, rowid)
+                delete_execute_general_trade_row(cursor, conn, strategy, code)
+        elif strategy == '封单不足-注数量':
+            action, amount = remark.split(":")
+            amount = float(amount)
+            if (action == 'buy' and bidVol1 <= amount) or (action == 'sell' and askVol1 <= amount):
+                insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str)
+                delete_receive_condition_row(cursor, conn, rowid)
+                delete_execute_general_trade_row(cursor, conn, strategy, code)
+
+        elif strategy == '回落卖-价涨幅-注回撤':
+            try:
+                if lastClose != 0:
+                    price_change_ratio = (high - lastClose) / lastClose
+                    retreat_ratio = (high - lastPrice) / high
+                    if (price_change_ratio >= price / 100) and (retreat_ratio >= float(remark) / 100):
+                        insert_order(cursor, conn, code, 0, quantity, buy_sell, strategy, '最优五档', datetime_str)
+                        delete_receive_condition_row(cursor, conn, rowid)
+                        delete_execute_general_trade_row(cursor, conn, strategy, code)
+            except ZeroDivisionError:
+                continue
+        elif strategy == '反弹买-价跌幅-注反弹':
+            try:
+                if lastClose != 0:
+                    price_drop_ratio = (lastClose - low) / lastClose
+                    rebound_ratio = (lastPrice - low) / low
+                    if (price_drop_ratio >= price / 100) and (rebound_ratio >= float(remark) / 100):
+                        insert_order(cursor, conn, code, 0, quantity, buy_sell, strategy, '最优五档', datetime_str)
+                        delete_receive_condition_row(cursor, conn, rowid)
+                        delete_execute_general_trade_row(cursor, conn, strategy, code)
+            except ZeroDivisionError:
+                continue
+        elif strategy.startswith('价差网格-注价差'):
+            process_price_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid)
+        elif strategy.startswith('振幅网格-注振幅'):
+            process_amplitude_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid)
+        else:
+            pass  # 其他策略
 
 
 
+# 问财根据委托备注获取数据
+def portfolio_rotation(order_note, order_quantity, strategy_name):
+    try:
+        if '基金' in order_note:
+            query_type = 'fund'
+        elif '转债' in order_note:
+            query_type = 'conbond'
+        else:
+            query_type = 'stock'
+
+        data = pywencai.get(query=order_note, query_type=query_type, loop=True)
+        
+        # 提取第一列数据并重命名为"证券代码"
+        securities_codes = data.iloc[:, 0].rename('证券代码').to_frame()
+        
+        # 增加多列数据
+        securities_codes = securities_codes.assign(
+            委托备注=order_note,
+            委托数量=order_quantity,
+            策略名称=strategy_name
+        )
+
+        return securities_codes
+    
+    except Exception as e:
+        # 捕获所有异常并打印错误信息
+        print(f"发生异常: {e}")
+        return None  # 返回 None 或其他适当的值以表示失败
+    
 
 
-
-
-
+# 根据委托备注获取数据
+def process_scheduled_tasks(scheduled_tasks, cursor, conn):
+    """
+    处理定时任务
+    """
+    try:
+        for row in scheduled_tasks:
+            rowid, code, price, quantity, buy_sell, strategy, remark, datetime_str = row
+            # 从'委托备注'获取查询参数
+            query = remark
+            # 调用portfolio_rotation(query)
+            A_data = portfolio_rotation(query, quantity, strategy)
+            # 假设A_data有列['证券代码', '委托数量', '策略名称', '委托备注']
+            if A_data.empty:
+                continue
+            # 删除'execute_general_trade'中'策略名称' == '问财轮动-注询问'且'买卖' == -1的行
+            cursor.execute("""
+                DELETE FROM execute_general_trade
+                WHERE 策略名称='问财轮动-注询问' AND 买卖=-1
+            """)
+            conn.commit()
+            # 从'execute_general_trade'获取相同'委托备注'的数据组
+            cursor.execute("""
+                SELECT 证券代码, 成交数量, 策略名称, 委托备注
+                FROM execute_general_trade
+                WHERE 委托备注=?
+            """, (remark,))
+            B_rows = cursor.fetchall()
+            B_data = set(row[0] for row in B_rows)
+            A_securities = set(A_data['证券代码'])
+            securities_to_buy = A_securities - B_data
+            securities_to_sell = B_data - A_securities
+            for buy_code in securities_to_buy:
+                row_data = A_data[A_data['证券代码'] == buy_code].iloc[0]
+                insert_order(cursor, conn, buy_code, 0, quantity, 1, strategy, remark, datetime.now().strftime('%Y%m%d %H:%M'))
+            for sell_code in securities_to_sell:
+                cursor.execute("""
+                    SELECT 成交数量
+                    FROM execute_general_trade
+                    WHERE 策略名称=? AND 证券代码=? AND 委托备注=?
+                """, (strategy, sell_code, remark))
+                execute_rows = cursor.fetchall()
+                total_quantity = sum(row[0] for row in execute_rows)
+                insert_order(cursor, conn, sell_code, 0, total_quantity, -1, strategy, remark, datetime.now().strftime('%Y%m%d %H:%M'))
+                cursor.execute("""
+                    DELETE FROM execute_general_trade
+                    WHERE 策略名称=? AND 证券代码=? AND 委托备注=?
+                """, (strategy, sell_code, remark))
+                conn.commit()
+    except Exception as e:
+        # 捕获所有异常并打印错误信息
+        print(f"发生异常: {e}")
+        # 回滚事务以确保数据一致性
+        conn.rollback()
+        return None  # 返回 None 或其他适当的值以表示失败
 
 
 
