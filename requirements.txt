@@ -5,8 +5,8 @@ MetaTrader5
 akshare
 baostock
 math
-numpy
-pandas
+numpy==1.264
+pandas==2.2.2
 pytdx
 pywencai
 random
@@ -18,4 +18,4 @@ sqlite3
 stats
 threading
 time
-
+yuhanbolh

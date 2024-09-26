@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='yuhanbolh',
-    version='0.4.0',
+    version='0.4.1',
     packages=find_packages(),
     description='量化投资，数据获取和处理',
     long_description=open('README.md', encoding='utf-8').read(),

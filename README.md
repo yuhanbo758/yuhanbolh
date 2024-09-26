@@ -6,6 +6,11 @@
 代码是从多个渠道获取金融数据，在运行过程中提示没有什么模块，就用pip安装什么模块。
 但迅投的xtdata和xttrade是不能通过pip安装的，需要把官网http://dict.thinktrader.net/nativeApi/download_xtquant.html 下载，然后放到python的...\Lib\site-packages路径中。
 
+微信公众号：余汉波
+![公众号](https://gdsx.sanrenjz.com/PicGo/qrcode_for_gh_a0ee12457f59_258.jpg)
+
+# 需要开QMT的可以联系我，微信：yuhanbo758
+![微信](https://gdsx.sanrenjz.com/PicGo/%E5%BE%AE%E4%BF%A1.png)
 
 schedule
 akshare
@@ -15,3 +20,4 @@ pywencai
 baostock
 pytdx
 MetaTrader5
+yuhanbolh

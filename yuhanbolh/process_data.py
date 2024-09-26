@@ -618,6 +618,16 @@ def get_processed_code(stock_code):
 
     return f"{stock_code}.{market}"
 
+# 通达信代码转换
+def tongda_code_convert(stock_code):
+    stock_code = str(stock_code)
+    if stock_code.startswith('0'):
+        return stock_code[1:] + '.SZ'
+    elif stock_code.startswith('1'):
+        return stock_code[1:] + '.SH'
+    else:
+        return stock_code  # 如果不满足条件，保持原样
+
 
 # 清洗execute_general_trade表
 def clean_execute_general_trade(conn):
