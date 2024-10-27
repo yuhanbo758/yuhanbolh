@@ -51,7 +51,7 @@ from .mt5_ic_custom import (
     save_data,
     save_exchange_rates_to_db,
     wencai_conditional_query_nz100,
-
+    calculate_totals
 )
 
 

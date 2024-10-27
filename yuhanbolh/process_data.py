@@ -365,7 +365,7 @@ def UO(data, n1, n2, n3):
     return pd.Series(UO, index=data.index, name='UO').dropna()
 
 
-# 计算线性回归
+# 计算线性回归，参数分别是：数据源，日期列表，一般为[5, 10, 20, 30, 60]，即linear_regression_dfcf(data, [5, 10, 20, 30, 60])
 def linear_regression_dfcf(data, days_list):
     df_list = []
     for many_days in days_list:

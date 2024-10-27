@@ -5,7 +5,7 @@ MetaTrader5
 akshare
 baostock
 math
-numpy==1.264
+numpy==1.26.4
 pandas==2.2.2
 pytdx
 pywencai

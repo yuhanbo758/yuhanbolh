@@ -390,7 +390,7 @@ def get_mt5_data(symbol):
         current_time = datetime.now()
         one_year_ago = current_time - timedelta(days=365*8)
         
-        # 获取品种从一年前到当前时间的日线数据
+        # 获取品种从8年前到当前时间的日线数据
         rates = mt5.copy_rates_range(symbol, timezone, one_year_ago, current_time)
         
         # 如果成功获取到数据，进行数据转换
@@ -977,15 +977,95 @@ def ex_fund_forex_valuation(db_path, table_name_guojin, table_name_result):
     return all_data
 
 
-if __name__ == '__main__':
-    db_path = r'D:\wenjian\python\smart\data\mt5.db'
+# 参数：数据库路径、EA_id（平仓策略代码）、magic（持仓策略代码）
+def calculate_totals(db_path, ea_id, magic):
+    # 连接到SQLite数据库
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
 
-    if not mt5.initialize(path=r"D:\jiaoyi\IC-MT5-Demo\terminal64.exe", login=518655571, password="Li1233566", server="ICMarketsSC-Demo"):
+    # 执行SQL查询，筛选出EA_id为指定值的所有数据
+    cursor.execute("""
+    SELECT "交易佣金", "隔夜利息", "利润"
+    FROM forex_trades
+    WHERE "EA_id" = ?
+    """, (ea_id,))
+
+    # 获取查询结果
+    results_forex_trades = cursor.fetchall()
+
+    # 初始化总和变量
+    total_commission = 0.0
+    total_swap_forex_trades = 0.0
+    total_profit_forex_trades = 0.0
+
+    # 计算总和
+    for row in results_forex_trades:
+        total_commission += row[0]
+        total_swap_forex_trades += row[1]
+        total_profit_forex_trades += row[2]
+
+    # 执行SQL查询，筛选出magic为指定值的所有数据
+    cursor.execute("""
+    SELECT "swap", "profit"
+    FROM position
+    WHERE "magic" = ?
+    """, (magic,))
+
+    # 获取查询结果
+    results_position = cursor.fetchall()
+
+    # 初始化总和变量
+    total_swap_position = 0.0
+    total_profit_position = 0.0
+
+    # 计算总和
+    for row in results_position:
+        total_swap_position += row[0]
+        total_profit_position += row[1]
+
+    # 打印结果
+    print(f"交易佣金总和: {total_commission}")
+    print(f"forex_trades表中隔夜利息总和: {total_swap_forex_trades}")
+    print(f"forex_trades表中利润总和: {total_profit_forex_trades}")
+    print(f"position表中隔夜利息总和: {total_swap_position}")
+    print(f"position表中利润总和: {total_profit_position}")
+    # 打印所有列的总和
+    print(f"总和: {total_commission + total_swap_forex_trades + total_profit_forex_trades + total_swap_position + total_profit_position}")
+
+    # 关闭数据库连接
+    conn.close()
+
+
+
+
+
+
+if __name__ == '__main__':
+    # db_path = r'D:\wenjian\python\smart\data\mt5.db'
+
+    if not mt5.initialize(path=r"D:\jiaoyi\IC-MT5-Demo\terminal64.exe", login=51455171, password="LiEbcs6r", server="ICMarketsSC-Demo"):
         print("initialize()失败，错误代码=", mt5.last_error())
     else:
         print("MT5 initialized")
     
-    get_valuation_ratios('AAPL')
+    # 获取数据
+    stock_code = 'AAPL.NAS'
+    df = generate_stat_data(stock_code)
+
+    # 数据库文件路径
+    db_path = r"D:\wenjian\python\smart\data\backtest_data.db"
+
+    # 连接到 SQLite 数据库
+    conn = sqlite3.connect(db_path)
+
+    # 将 DataFrame 写入数据库表
+    table_name = '沪深300随机50总评价'
+    df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+    # 关闭数据库连接
+    conn.close()
+
+    print(f"数据已成功导出到数据库表 {table_name} 中。")
 
     # 从问财网获取纳斯达克100指数成分股数据，参数查询语句，每年的1月1日运行一次，因为纳斯达克100指数成分股每年年底会有变化
     # wencai_conditional_query("纳斯达克100指数成分股")
