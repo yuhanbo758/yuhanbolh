@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='yuhanbolh',
-    version='0.4.2',
+    version='0.4.3',
     packages=find_packages(),
     description='量化投资，数据获取和处理',
     long_description=open('README.md', encoding='utf-8').read(),
@@ -12,13 +12,20 @@ setup(
     author_email='yuhanbo@sanrenjz.com',
     license='MIT',
     install_requires=[
-        'BeautifulSoup4',
+        'akshare',
+        'baostock',
+        'beautifulsoup4',
+        'MetaTrader5',
+        'numpy==1.26.4',
+        'pandas==2.2.2',
+        'pytdx',
+        'pywencai',
         'requests',
-        'numpy',
-        'pandas',
+        'schedule',
+        'statsmodels',
     ],
     classifiers=[
-        'Development Status :: 3 - Alpha',  # 根据您的开发状态选择：Alpha/Beta/Stable
+        'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
         'Topic :: Software Development :: Libraries',
         'License :: OSI Approved :: MIT License',
@@ -32,5 +39,5 @@ setup(
         'Programming Language :: Python :: 3.12',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',  # 根据需要修改
+    python_requires='>=3.6',
 )
