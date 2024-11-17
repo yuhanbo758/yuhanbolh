@@ -13,10 +13,130 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 import baostock as bs
 from pytdx.hq import TdxHq_API
+import configparser
 from . import global_functions as gf
 from pandas import Series, DataFrame
 from typing import List
 
+# 定义全局变量
+global_tdx_ip = None
+global_tdx_port = None
+
+def init_global_address(cfg_file):
+    """初始化全局服务器地址"""
+    global global_tdx_ip, global_tdx_port
+    global_tdx_ip, global_tdx_port = get_tdx_market_address(cfg_file)
+    return global_tdx_ip, global_tdx_port
+
+# 从通达信配置文件获取行情IP地址
+def get_tdx_market_address(cfg_file):
+    try:
+
+        if os.path.exists(cfg_file):
+            # 读取配置文件
+            config = configparser.ConfigParser()
+            with open(cfg_file, 'r', encoding='gb2312') as f:
+                config.read_file(f)
+            
+            # 获取主服务器编号
+            primary_host = int(config.get('HQHOST', 'PrimaryHost'))
+            
+            # 获取对应的服务器信息
+            ip_key = f'IPAddress{primary_host:02d}'
+            port_key = f'Port{primary_host:02d}'
+            
+            ip = config.get('HQHOST', ip_key)
+            port = int(config.get('HQHOST', port_key))
+            print(f"行情服务器地址: {ip}:{port}")
+            
+            return ip, port
+            
+    except Exception as e:
+        print(f"获取行情地址失败：{str(e)}")
+        return None, None
+
+# 处理数据
+def get_financial_data(server_ip, server_port, data_function):
+    try:
+        api = TdxHq_API()
+
+        if api.connect(server_ip, server_port):
+            data = data_function(api)  # 使用传入的函数获取数据
+            if data is None:
+                api.disconnect()
+                return "没有收到数据。"
+
+            df = api.to_df(data)  # 转换为DataFrame
+            
+            api.disconnect()
+            return df
+        else:
+            return "连接失败。"
+    except Exception as e:
+        return f"发生异常: {str(e)}"
+
+def get_security_quotes(market_codes):
+    """获取盘口数据(买卖五档)
+    Args:
+        market_codes: 列表，每个元素为元组(市场代码,股票代码)，如[(0,'000001'),(0,'000002')]
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_quotes(market_codes))
+
+def get_security_bars(category, market, code, start, count):
+    """获取K线数据
+    Args:
+        category: K线类型（0 5分钟K线; 1 15分钟K线; 2 30分钟K线; 3 1小时K线; 4 日K线; 5 周K线; 6 月K线; 7 1分钟; 8 1分钟K线; 9 日K线; 10 季K线; 11 年K线）
+        market: 市场代码（0:深圳, 1:上海）
+        code: 股票代码
+        start: 起始位置（0为最新）
+        count: 数量，最高800
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_bars(category, market, code, start, count))
+
+def get_security_count(market):
+    """获取市场股票数量
+    Args:
+        market: 市场代码（0:深圳, 1:上海）
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_count(market))
+
+def get_index_bars(category, market, code, start, count):
+    """获取指数K线数据
+    Args:
+        category: K线类型（0:分时, 1:1分钟, 2:5分钟, 3:15分钟, 4:30分钟, 5:60分钟）
+        market: 市场代码（0:深圳, 1:上海）
+        code: 指数代码
+        start: 起始位置（0为最新）
+        count: 数量
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_index_bars(category, market, code, start, count))
+
+def get_history_minute_time_data(market, code, date):
+    """获取历史分钟数据
+    Args:
+        market: 市场代码（0:深圳, 1:上海）
+        code: 股票代码
+        date: 日期，格式如20241115
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_history_minute_time_data(market, code, date))
+
+def get_transaction_data(market, code, start, count):
+    """获取历史分笔成交
+    Args:
+        market: 市场代码（0:深圳, 1:上海）
+        code: 股票代码
+        start: 起始位置（0为最新）
+        count: 数量
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_transaction_data(market, code, start, count))
+
+def get_finance_info(market, code):
+    """获取财务数据
+    Args:
+        market: 市场代码（0:深圳, 1:上海）
+        code: 股票代码
+    """
+    return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_finance_info(market, code))
 
 # 获取金融数据文件
 
@@ -194,25 +314,6 @@ def download_7_years_data(stock_list):
     # 下载近7年的历史数据
     xtdata.download_history_data2(stock_list, period='1d', start_time=start_time, callback=on_progress)
     
-
-# 获取通达信的数据，参数有3个：服务器IP、服务器端口、函数
-def get_financial_data(server_ip, server_port, data_function):
-    try:
-        api = TdxHq_API()
-
-        if api.connect(server_ip, server_port):
-            data = data_function(api)  # 使用传入的函数获取数据
-            if data is None:
-                api.disconnect()
-                return "No data received."
-
-            df = api.to_df(data)  # 转换为DataFrame
-            api.disconnect()
-            return df
-        else:
-            return "Connection failed."
-    except Exception as e:
-        return f"An exception occurred: {str(e)}"
 
 # 获取乌龟量化的指数估值数据，没有参数 
 def turtle_quant_analysis():
