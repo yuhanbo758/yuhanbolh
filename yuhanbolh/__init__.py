@@ -10,6 +10,7 @@ from .create_strategy import (
 
 # 获取金融数据文件
 from .get_data import (
+    init_global_address,
     get_tdx_market_address,
     get_financial_data,
     get_security_bars,
