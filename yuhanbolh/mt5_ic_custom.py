@@ -140,7 +140,7 @@ def save_exchange_rates_to_db(db_path, table_name):
 
 
 
-# 通过代码，获取价值大师的价值线
+# 通过代码，获取价值大师的价值线，参数是代码，例如000001
 def get_valuation_ratios(code):
     try:
         url = 'https://www.gurufocus.cn/stock/{}/term/gf_value'.format(code)
@@ -408,6 +408,48 @@ def get_mt5_data(symbol):
     except Exception as e:
         print(f"在获取数据时发生错误：{e}")
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
+    
+
+# 从MT5获取指定品种的历史日线数据，日期长度可自定义，参数分别是交易品种和天数
+def get_mt5_data_with_days(symbol, days=365*8):
+    """
+    从MT5获取指定品种的历史日线数据，日期长度可自定义，并返回包含所有数据的DataFrame。
+
+    参数:
+    symbol: str
+        希望获取数据的市场品种的符号。
+    days: int
+        希望获取的历史数据天数，默认为8年(365*8天)。
+    
+    返回:
+    df: DataFrame
+        包含历史日线数据的DataFrame。
+    """
+    try:
+        # 设置时间范围
+        timezone = mt5.TIMEFRAME_D1  # 日线数据
+        current_time = datetime.now()
+        start_time = current_time - timedelta(days=days)
+        
+        # 获取品种从指定天数前到当前时间的日线数据
+        rates = mt5.copy_rates_range(symbol, timezone, start_time, current_time)
+        
+        # 如果成功获取到数据，进行数据转换
+        if rates is not None and len(rates) > 0:
+            # 将数据转换为Pandas DataFrame
+            df = pd.DataFrame(rates)
+            # 转换时间格式
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            # 重命名 'tick_volume' 列为 'volume'
+            df.rename(columns={'tick_volume': 'volume'}, inplace=True)
+        else:
+            print(f"未找到 {symbol} 的数据")
+            df = pd.DataFrame()  # 如果没有数据，则返回一个空的DataFrame
+        return df
+    except Exception as e:
+        print(f"在获取数据时发生错误：{e}")
+        return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
+
 
 # 获取data数据中的第几行数据
 def get_row(data, index):

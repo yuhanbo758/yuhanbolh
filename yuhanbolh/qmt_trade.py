@@ -358,12 +358,12 @@ def place_order_based_on_asset(xt_trader, acc, xtdata):
     else:
         print('连接失败')
 
-# 对委托数据表进行排序并更新，先卖后买，先评分（操作）高后评分低
-def sort_and_update_table(table_name):
+# 对委托数据表进行排序并更新，先卖后买，先评分（操作）高后评分低。参数是表名和数据库路径
+def sort_and_update_table(table_name, db_path=r"D:\wenjian\python\smart\data\guojin_account.db"):
     conn = None
     try:
         # 连接到SQLite数据库
-        conn = sqlite3.connect("D:/wenjian/python/smart/data/guojin_account.db")
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
         # 按照买卖和操作列排序查询数据
@@ -400,13 +400,15 @@ def sort_and_update_table(table_name):
 
 # 定义qmt推送的类
 class MyXtQuantTraderCallback(XtQuantTraderCallback):
-    gj_db_path = r'D:\wenjian\python\smart\data\guojin_account.db'
+    
+    def __init__(self, db_path=r'D:\wenjian\python\smart\data\guojin_account.db'):
+        self.db_path = db_path
     
     # 资金变动推送  注意，该回调函数目前不生效
     def on_stock_asset(self, asset):
         try:
             # 使用上下文管理器连接到SQLite数据库
-            with sqlite3.connect(self.gj_db_path) as conn:
+            with sqlite3.connect(self.db_path) as conn:
 
                 # 创建DataFrame
                 data = {
@@ -432,7 +434,7 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
     def on_stock_trade(self, trade):
         try:
             # 使用上下文管理器连接到SQLite数据库
-            with sqlite3.connect(self.gj_db_path) as conn:
+            with sqlite3.connect(self.db_path) as conn:
             
                 # 成交变动推送
                 buy_sell = 1 if trade.order_type == 23 else -1 if trade.order_type == 24 else 0
@@ -476,7 +478,7 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
     def on_stock_position(self, positions):
         try:
             # 使用上下文管理器连接到SQLite数据库
-            with sqlite3.connect(self.gj_db_path) as conn:
+            with sqlite3.connect(self.db_path) as conn:
 
                 # 准备插入的数据
                 values = [(position.account_type,         # 账户类型
@@ -552,7 +554,7 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         :param response: XtAccountStatus 对象
         :return:
         """
-        print("账户状态，类型2为“证券账户”，状态：-1-无效；0-正常；4-初始化")   # http://docs.thinktrader.net/vip/pages/198696/#%E8%B4%A6%E5%8F%B7%E7%8A%B6%E6%80%81-account-status
+        print("账户状态，类型2为\"证券账户\"，状态：-1-无效；0-正常；4-初始化")   # http://docs.thinktrader.net/vip/pages/198696/#%E8%B4%A6%E5%8F%B7%E7%8A%B6%E6%80%81-account-status
         print(status.account_id, status.account_type, status.status)
 
 
@@ -713,7 +715,7 @@ if __name__ == '__main__':
 
                 session_id = int(random.randint(100000, 999999))
                 xt_trader = XtQuantTrader(path, session_id)
-                callback = MyXtQuantTraderCallback()
+                callback = MyXtQuantTraderCallback(db_path)
                 xt_trader.register_callback(callback)
                 xt_trader.start()
                 

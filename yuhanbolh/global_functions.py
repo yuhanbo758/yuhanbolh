@@ -7,12 +7,42 @@ import requests
 
 # 全局函数
 
-
-
-# 读取mm.db，查询账号密码
-def check_account(column_name, project_name):
-    db_path = r"D:\wenjian\python\data\data\mm.db"
+# 创建账号密码数据库及表，参数为数据库路径
+def create_account_database(db_data_path):
     try:
+        # 确保目录存在
+        os.makedirs(os.path.dirname(db_data_path), exist_ok=True)
+        
+        # 创建数据库连接
+        conn = sqlite3.connect(db_data_path)
+        cursor = conn.cursor()
+        
+        # 创建表
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS connect_account_password (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_name TEXT NOT NULL,
+            username TEXT,
+            password TEXT
+        )
+        ''')
+        
+        # 提交更改并关闭连接
+        conn.commit()
+        conn.close()
+        
+        print(f"已成功创建数据库 {db_data_path} 和表 connect_account_password")
+    except Exception as e:
+        print(f"创建数据库时出错：{e}")
+
+# 读取mm.db，查询账号密码，参数分别为列名（指定为username，password），项目名称（mm）。
+def check_account(column_name, project_name):
+    db_path = r"D:\data\database\mm.db"
+    try:
+        # 如果数据库不存在，先创建数据库
+        if not os.path.exists(db_path):
+            create_account_database(db_path)
+            
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
@@ -37,7 +67,35 @@ def check_account(column_name, project_name):
     except Exception as e:
         print(f"数据库操作错误：{e}")
         return None
-    
+
+# 向数据库添加账号密码，参数为项目名称，用户名，密码
+def add_account(project_name, username, password):
+    db_path = r"D:\data\database\mm.db"
+    try:
+        # 如果数据库不存在，先创建数据库
+        if not os.path.exists(db_path):
+            create_account_database(db_path)
+            
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # 插入数据
+        cursor.execute('''
+        INSERT INTO connect_account_password (project_name, username, password)
+        VALUES (?, ?, ?)
+        ''', (project_name, username, password))
+        
+        # 提交更改并关闭连接
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        print(f"已成功添加项目 {project_name} 的账号信息")
+        return True
+    except Exception as e:
+        print(f"添加账号信息时出错：{e}")
+        return False
+
 
 # 将数据上传到远程数据库
 def copy_table_to_mysql(sqlite_db_path: str, table_names: list):
@@ -279,14 +337,14 @@ def generate_mole_strategy(db_path, strategies):
         print(f"An error occurred: {e}")
 
 
-# 复制数据库的多个数据表到另一个数据库中，参数为需要复制的表名列表
-def copy_tables(table_names):
-    # 连接到 guojin_account.db 数据库
-    conn1 = sqlite3.connect('D:\\wenjian\\python\\smart\\data\\guojin_account.db')
+# 复制数据库的多个数据表到另一个数据库中，参数为需要复制的表名列表，源数据库路径，目标数据库路径
+def copy_tables(table_names, source_db_path='D:\\wenjian\\python\\smart\\data\\guojin_account.db', target_db_path=r"D:\wenjian\synkdy\data\sync_database.db"):
+    # 连接到源数据库
+    conn1 = sqlite3.connect(source_db_path)
     cursor1 = conn1.cursor()
 
-    # 连接到 sync_database.db 数据库
-    conn2 = sqlite3.connect(r"D:\wenjian\synkdy\data\sync_database.db")
+    # 连接到目标数据库
+    conn2 = sqlite3.connect(target_db_path)
     cursor2 = conn2.cursor()
 
     for table_name in table_names:
@@ -298,13 +356,13 @@ def copy_tables(table_names):
         cursor1.execute(f"SELECT * FROM {table_name}")
         data = cursor1.fetchall()
 
-        # 如果 sync_database.db 数据库中已经存在同名表，先删除它
+        # 如果目标数据库中已经存在同名表，先删除它
         cursor2.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-        # 在 sync_database.db 数据库中创建表
+        # 在目标数据库中创建表
         cursor2.execute(create_table_query)
 
-        # 将数据插入到 sync_database.db 数据库中
+        # 将数据插入到目标数据库中
         for row in data:
             cursor2.execute(f"INSERT INTO {table_name} VALUES (" + ",".join(["?"]*len(row)) + ")", row)
 
@@ -340,37 +398,6 @@ def sync_folders(source, destination):
                 shutil.copy2(src_file, dest_file)
 
 
-# 上传文件到 Lsky Pro 并返回 Markdown 链接，策略ID为2时，返回的链接为minlo图床的链接
-def upload_to_lsky_pro(file_path):
-    # 上传信息
-    upload_url = "http://192.168.31.143:7791/api/v1/upload"
-    token = check_account("password", upload_url)
-    policy_id = 2  # minlo图床
-
-    # 读取文件
-    files = {'file': open(file_path, 'rb')}
-    # 设置请求头
-    headers = {
-        'Authorization': f'Bearer {token}'
-    }
-
-    # 设置请求体
-    data = {
-        'strategy_id': policy_id
-    }
-
-    # 发起请求
-    response = requests.post(upload_url, headers=headers, files=files, data=data)
-
-    # 处理响应
-    if response.status_code == 200:
-        response_data = response.json()
-        if response_data['status']:
-            return response_data['data']['links']['markdown']
-        else:
-            raise Exception(f"上传失败: {response_data['message']}")
-    else:
-        raise Exception(f"上传失败: {response.status_code} {response.text}")
 
 # 获取小数点后的位数
 def get_decimal_places(number):

@@ -75,6 +75,7 @@ def get_financial_data(server_ip, server_port, data_function):
     except Exception as e:
         return f"发生异常: {str(e)}"
 
+# 获取盘口数据(买卖五档)
 def get_security_quotes(market_codes):
     """获取盘口数据(买卖五档)
     Args:
@@ -82,6 +83,7 @@ def get_security_quotes(market_codes):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_quotes(market_codes))
 
+# 获取K线数据
 def get_security_bars(category, market, code, start, count):
     """获取K线数据
     Args:
@@ -93,6 +95,7 @@ def get_security_bars(category, market, code, start, count):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_bars(category, market, code, start, count))
 
+# 获取市场股票数量
 def get_security_count(market):
     """获取市场股票数量
     Args:
@@ -100,6 +103,7 @@ def get_security_count(market):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_security_count(market))
 
+# 获取指数K线数据
 def get_index_bars(category, market, code, start, count):
     """获取指数K线数据
     Args:
@@ -111,6 +115,7 @@ def get_index_bars(category, market, code, start, count):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_index_bars(category, market, code, start, count))
 
+# 获取历史分钟数据
 def get_history_minute_time_data(market, code, date):
     """获取历史分钟数据
     Args:
@@ -120,6 +125,7 @@ def get_history_minute_time_data(market, code, date):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_history_minute_time_data(market, code, date))
 
+# 获取历史分笔成交
 def get_transaction_data(market, code, start, count):
     """获取历史分笔成交
     Args:
@@ -130,6 +136,7 @@ def get_transaction_data(market, code, start, count):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_transaction_data(market, code, start, count))
 
+# 获取财务数据
 def get_finance_info(market, code):
     """获取财务数据
     Args:
@@ -138,9 +145,11 @@ def get_finance_info(market, code):
     """
     return get_financial_data(global_tdx_ip, global_tdx_port, lambda api: api.get_finance_info(market, code))
 
+
+
 # 获取金融数据文件
 
-# 通过东方财富api获取K线数据，参数包括股票代码，天数，复权类型，K线类型
+# 通过东方财富api获取K线数据，参数包括股票代码（000001.SZ的代码获取最新数），天数，复权类型，K线类型
 # `klt`：K 线周期，可选值包括 5（5 分钟 K 线）、15（15 分钟 K 线）、30（30 分钟 K 线）、60（60 分钟 K 线）、101（日 K 线）、102（周 K 线）、103（月 K 线）等。
 # `fqt`：复权类型，可选值包括 0（不复权）、1（前复权）、2（后复权）。
 def json_to_dfcf(code, days=1, fqt=1, klt=101):     # 参数参考我的东方财富api文档
@@ -169,7 +178,7 @@ def json_to_dfcf(code, days=1, fqt=1, klt=101):     # 参数参考我的东方�
         print(f"发生异常: {e}")
         return None
 
-# 通过类似000001.SZ的代码获取最新数据（东财api），参数3个，分别是：代码（必要），天数，复权类型
+# 通过类似000001.SZ的代码获取日线数据（东财api），参数3个，分别是：代码（必要），天数，复权类型
 def json_to_dfcf_qmt(code, days=7*365, fqt=1):
     if code.endswith("SH"):
         code = "1." + code[:-3]
@@ -315,39 +324,7 @@ def download_7_years_data(stock_list):
     xtdata.download_history_data2(stock_list, period='1d', start_time=start_time, callback=on_progress)
     
 
-# 获取乌龟量化的指数估值数据，没有参数 
-def turtle_quant_analysis():
-    # 设置请求头，模仿浏览器发送请求。
-    headers = {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36 Edg/108.0.1462.54',
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-        'accept-encoding': 'gzip, deflate, br'
-    }
-    # 发送HTTP请求，获取网页内容。
-    response = requests.get('https://wglh.com/indicestop', headers=headers)
-    response.raise_for_status()  # 如果请求返回失败的状态码，将抛出异常。
 
-    # 使用BeautifulSoup解析HTML内容。
-    soup = BeautifulSoup(response.text, 'lxml')
-
-    # 用于存储解析数据的列表。
-    data = []
-
-    # 遍历HTML中的表格及其行和单元格。
-    for table in soup.select('#table1'):
-        for row in table.select('tr'):
-            row_data = []
-            for cell in row.select('th, td'):
-                cell_data = cell.text.strip()
-                # 将百分比字符串转换为浮点数。
-                if '%' in cell_data:
-                    cell_data = float(cell_data.rstrip('%')) / 100
-                row_data.append(cell_data)
-            data.append(row_data)
-        break  # 只处理第一个表格。
-
-    # 使用解析到的数据创建Pandas DataFrame。
-    return pd.DataFrame(data[1:], columns=data[0])
 
 # 获取akshare指数估值数据，没有参数
 def akshare_index_analysis():
@@ -507,8 +484,8 @@ def get_valuation_ratios(code):
 
 
 # 获取持仓和收盘价，从而获得整体的交易日期和现金流，然后保存到数据库到r"D:\wenjian\python\smart\data\guojin_account.db"
-def position_close_process_data(table_name):
-    db_path = r"D:\wenjian\python\smart\data\guojin_account.db"
+def position_close_process_data(table_name, db_path = r"D:\wenjian\python\smart\data\guojin_account.db"):
+    
     conn = sqlite3.connect(db_path)
 
     query = f"SELECT * FROM {table_name}"
