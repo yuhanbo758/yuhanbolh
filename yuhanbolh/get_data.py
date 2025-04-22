@@ -331,6 +331,11 @@ def akshare_index_analysis():
     df = ak.index_value_name_funddb()
     return df
 
+# 获取韭圈儿的指数估值数据
+def index_value_name_funddb():
+    temp_df = ak.index_value_name_funddb()
+    return temp_df
+
 # 通过pywencai模块获取问财数据，参数为：问题和查询类型，以及是否循环分页。
 def get_pywencai(question, query_type, loop=True):
     res = pywencai.get(question=f'{question}',query_type =f'{query_type}', loop=True)
@@ -710,6 +715,33 @@ def process_and_merge_data(db_path: str, table_name: str, acc: str):
         conn.close()
 
 
-
+# 获取东方财富全球财经快讯，共200条，只保留摘要
+def stock_info_global_em() -> pd.DataFrame:
+    """
+    东方财富-全球财经快讯
+    https://kuaixun.eastmoney.com/7_24.html
+    :return: 全球财经快讯摘要
+    :rtype: pandas.DataFrame
+    """
+    url = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
+    params = {
+        "client": "web",
+        "biz": "web_724",
+        "fastColumn": "102",
+        "sortEnd": "",
+        "pageSize": "200",
+        "req_trace": "1710315450384",
+    }
+    r = requests.get(url, params=params)
+    data_json = r.json()
+    temp_df = pd.DataFrame(data_json["data"]["fastNewsList"])
+    temp_df = temp_df[["summary"]]
+    temp_df.rename(
+        columns={
+            "summary": "摘要",
+        },
+        inplace=True,
+    )
+    return temp_df
 
 

@@ -330,47 +330,6 @@ def get_all_valuation_ratios_db(db_path, table_name):
 
 
 
-# 将数据保存为sql
-def save_data(function, db_path, original_table_name, new_table_name):
-    """
-    执行 function 以获取数据，并将该数据与 original_table_name 表的内容合并，
-    然后将合并后的数据保存到 new_table_name 表中。
-
-    参数:
-    function: callable
-        获取数据的自定义函数。
-    db_path: str
-        数据库文件的路径。
-    original_table_name: str
-        原始数据表的名称。
-    new_table_name: str
-        用于保存合并后数据的新表名称。
-    """
-    # 创建数据库连接
-    conn = sqlite3.connect(db_path)
-    
-    try:
-        # 获取原始表中的数据
-        original_data = pd.read_sql_query(f"SELECT * FROM `{original_table_name}`", conn)
-        
-        # 调用自定义函数获取新的数据
-        new_data = function(db_path, original_table_name)
-        
-        # 如果新数据不为空，合并原始数据和新数据
-        if not new_data.empty:
-            merged_data = pd.merge(original_data, new_data, on='价值代码', how='left')
-        else:
-            merged_data = original_data
-        
-        # 将合并后的数据保存到新的表中
-        merged_data.to_sql(new_table_name, conn, if_exists='replace', index=False)
-    except Exception as e:
-        print(f"发生错误: {e}")
-    finally:
-        # 关闭数据库连接
-        conn.close()
-
-
 # 从MT5获取指定品种的8年历史日线数据
 def get_mt5_data(symbol):
     """
@@ -456,7 +415,27 @@ def get_row(data, index):
     return data.iloc[[index]].reset_index(drop=True)
 
 
-def MA(data, n):
+# 获取data数据中的第几行数据
+def get_stock_list_from_db():
+    # 连接到数据库
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # 执行查询，获取“代码”列的数据
+    query = "SELECT 代码 FROM 指数价值"
+    cursor.execute(query)
+    results = cursor.fetchall()
+
+    # 将结果放入stock_list中
+    stock_list = [row[0] for row in results]
+
+    # 关闭连接
+    conn.close()
+
+    return stock_list
+
+
+def MA_zb(data, n):
     MA = pd.Series(data['close'].rolling(n).mean(), name='MA_' + str(n))
     close = data['close']
     signal = np.where(MA < close, 1, np.where(MA > close, -1, 0))
@@ -464,7 +443,7 @@ def MA(data, n):
 
 
 # 获取指数移动平均线，参数有2个，一个是数据源，一个是日期
-def EMA(data, n):
+def EMA_zb(data, n):
     EMA = pd.Series(data['close'].ewm(span=n, min_periods=n).mean(), name='EMA_' + str(n))
     close = data['close']
     signal = np.where(EMA < close, 1, np.where(EMA > close, -1, 0))
@@ -473,7 +452,7 @@ def EMA(data, n):
 
 # 获取一目均衡表基准线 (data, conversion_periods, base_periods, lagging_span2_periods, displacement)
 # 参数有5个，第一个是数据源，其他4个分别是一目均衡表基准线 (9, 26, 52, 26)，即ichimoku_cloud(data,9, 26, 52, 26)
-def ichimoku_cloud(data, conversion_periods, base_periods, lagging_span2_periods, displacement):
+def ichimoku_cloud_zb(data, conversion_periods, base_periods, lagging_span2_periods, displacement):
     def donchian(length):
         return (data['high'].rolling(length).max() + data['low'].rolling(length).min()) / 2
     
@@ -496,7 +475,7 @@ def ichimoku_cloud(data, conversion_periods, base_periods, lagging_span2_periods
 
 
 # 成交量加权移动平均线 VWMA (data, 20)，参数有2个，1个是数据源，另一个是日期，通过为20
-def VWMA(data, n):
+def VWMA_zb(data, n):
     # 计算VWMA
     vwma = (data['close'] * data['volume']).rolling(n).sum() / data['volume'].rolling(n).sum()
     
@@ -509,7 +488,7 @@ def VWMA(data, n):
 
 
 # 计算Hull MA船体移动平均线 Hull MA (data,9)，参数有2，一个是数据源，另一个是日期，一般为9
-def HullMA(data, n=9):
+def HullMA_zb(data, n=9):
     def wma(series, period):
         weights = np.arange(1, period + 1)
         return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
@@ -527,7 +506,7 @@ def HullMA(data, n=9):
     return pd.DataFrame(signal, columns=['HullMA_' + str(n)])
 
 # 计算RSI指标，参数有2，一个为数据源，另一个为日期，一般为14，即RSI(data, 14)
-def RSI(data, n):
+def RSI_zb(data, n):
     lc = data['close'].shift(1)
     diff = data['close'] - lc
     up = diff.where(diff > 0, 0)
@@ -545,7 +524,7 @@ def RSI(data, n):
     return pd.DataFrame({'RSI_' + str(n): signal})
 
 # 计算Stochastic，k是主线，d_signal是信号线，参数有4，一个是数据源，另外三个为日期，一般为STOK(data, 14, 3, 3)
-def STOK(data, n, m, t):
+def STOK_zb(data, n, m, t):
     # 计算过去n天的最高价
     high = data['high'].rolling(n).max()
     # 计算过去n天的最低价
@@ -571,7 +550,7 @@ def STOK(data, n, m, t):
 
 
 # 计算CCI指标，参数有2，一个是数据源，另一个是日期，一般为20，即CCI(data, 20)
-def CCI(data, n):
+def CCI_zb(data, n):
     TP = (data['high'] + data['low'] + data['close']) / 3
     MA = TP.rolling(n).mean()
     MD = TP.rolling(n).apply(lambda x: np.abs(x - x.mean()).mean())
@@ -587,7 +566,7 @@ def CCI(data, n):
 
 
 # 平均趋向指数ADX(14)，参数有2，一个是数据源，另一个是日期，一般为14，即ADX(data,14)
-def ADX(data, n):
+def ADX_zb(data, n):
     # 计算当前最高价与前一天最高价的差值，以及前一天最低价与当前最低价的差值
     up = data['high'] - data['high'].shift(1)
     down = data['low'].shift(1) - data['low']
@@ -618,7 +597,7 @@ def ADX(data, n):
 
 
 # 计算动量震荡指标(AO)，参数只有一个，即数据源
-def AO(data):
+def AO_zb(data):
     # 计算Awesome Oscillator（AO）
     AO = (data['high'].rolling(5).mean() + data['low'].rolling(5).mean()) / 2 - (data['high'].rolling(34).mean() + data['low'].rolling(34).mean()) / 2
 
@@ -642,7 +621,7 @@ def AO(data):
 
 
 # 计算动量指标(10)，参数只有一个，即数据源
-def MTM(data):
+def MTM_zb(data):
     # 计算MTM值：当前收盘价与10天前的收盘价之差
     MTM = data['close'] - data['close'].shift(10)
     
@@ -656,7 +635,7 @@ def MTM(data):
     return pd.DataFrame({'MTM': signal})
 
 # MACD_1是以金叉和死叉进行判断，参数有3个，第一个是数据源，其余两个为日期，一般取12和26，即MACD(data, 12,26)
-def MACD_Level(data, n_fast, n_slow):
+def MACD_Level_zb(data, n_fast, n_slow):
      # 计算快速EMA
     EMAfast = data['close'].ewm(span=n_fast, min_periods=n_slow).mean()
     
@@ -679,7 +658,7 @@ def MACD_Level(data, n_fast, n_slow):
     return pd.DataFrame({'MACD': signal})
 
 # 计算Stoch_RSI(data,3, 3, 14, 14)，有5个参数，第1个为数据源
-def Stoch_RSI(data, smoothK=3, smoothD=3, lengthRSI=14, lengthStoch=14):
+def Stoch_RSI_zb(data, smoothK=3, smoothD=3, lengthRSI=14, lengthStoch=14):
     # 计算RSI
     lc = data['close'].shift(1)
     diff = data['close'] - lc
@@ -709,7 +688,7 @@ def Stoch_RSI(data, smoothK=3, smoothD=3, lengthRSI=14, lengthStoch=14):
     return pd.DataFrame({'Stoch_RSI': signal})
 
 # 计算威廉百分比变动，参数有2，第1是数据源，第二是日期，一般为14，即WPR(data, 14)
-def WPR(data, n):
+def WPR_zb(data, n):
     # 计算WPR（Williams %R）值
     WPR = pd.Series((data['high'].rolling(n).max() - data['close']) / 
                     (data['high'].rolling(n).max() - data['low'].rolling(n).min()) * -100, 
@@ -731,7 +710,7 @@ def WPR(data, n):
 
 
 # 计算Bull Bear Power牛熊力量(BBP)，参数有2，一个是数据源，另一个是日期，一般为20，但在tradingview取13，即BBP(data, 13)
-def BBP(data, n):
+def BBP_zb(data, n):
     # 计算牛市力量（BullPower）和熊市力量（BearPower）
     bullPower = data['high'] - data['close'].ewm(span=n).mean()
     bearPower = data['low'] - data['close'].ewm(span=n).mean()
@@ -756,7 +735,7 @@ def BBP(data, n):
 
 
 # 计算Ultimate Oscillator终极震荡指标UO (data,7, 14, 28)，有4个参数，第1个是数据源，其他的是日期
-def UO(data, n1, n2, n3):
+def UO_zb(data, n1, n2, n3):
     # 计算前一天的收盘价和今天的最低价中的最小值
     min_low_or_close = pd.concat([data['low'], data['close'].shift(1)], axis=1).min(axis=1)
     
@@ -787,7 +766,7 @@ def UO(data, n1, n2, n3):
 
 
 # 计算线性回归
-def linear_regression_dfcf(data, years_list):
+def linear_regression_dfcf_zb(data, years_list):
     df_list = []
     for many_years in years_list:
         percent = round(len(data) / 7 * many_years)
@@ -807,50 +786,50 @@ def linear_regression_dfcf(data, years_list):
 
     return result
 
-def generate_stat_data(stock_code):
+def generate_stat_data_zb(stock_code):
     data = get_mt5_data(stock_code)
 
-    ma10 = MA(data, 10)
-    ma20 = MA(data, 20)
-    ma30 = MA(data, 30)
-    ma50 = MA(data, 50)
-    ma100 = MA(data, 100)
-    ma200 = MA(data, 200)
+    ma10 = MA_zb(data, 10)
+    ma20 = MA_zb(data, 20)
+    ma30 = MA_zb(data, 30)
+    ma50 = MA_zb(data, 50)
+    ma100 = MA_zb(data, 100)
+    ma200 = MA_zb(data, 200)
 
-    ema10 = EMA(data, 10)
-    ema20 = EMA(data, 20)
-    ema30 = EMA(data, 30)
-    ema50 = EMA(data, 50)
-    ema100 = EMA(data, 100)
-    ema200 = EMA(data, 200)
+    ema10 = EMA_zb(data, 10)
+    ema20 = EMA_zb(data, 20)
+    ema30 = EMA_zb(data, 30)
+    ema50 = EMA_zb(data, 50)
+    ema100 = EMA_zb(data, 100)
+    ema200 = EMA_zb(data, 200)
 
-    ic = ichimoku_cloud(data,9, 26, 52, 26)
+    ic = ichimoku_cloud_zb(data,9, 26, 52, 26)
 
-    vwma = VWMA(data, 20)
+    vwma = VWMA_zb(data, 20)
 
-    hm = HullMA(data, 9)
+    hm = HullMA_zb(data, 9)
 
-    rsi = RSI(data, 14)
+    rsi = RSI_zb(data, 14)
 
-    stok = STOK(data, 14, 3, 3)
+    stok = STOK_zb(data, 14, 3, 3)
 
-    cci = CCI(data, 20)
+    cci = CCI_zb(data, 20)
 
-    adx = ADX(data, 14)
+    adx = ADX_zb(data, 14)
 
-    ao = AO(data)
+    ao = AO_zb(data)
 
-    mtm = MTM(data)
+    mtm = MTM_zb(data)
 
-    macd_level = MACD_Level(data, 12, 26)
+    macd_level = MACD_Level_zb(data, 12, 26)
 
-    stoch_rsi = Stoch_RSI(data, 3, 3, 14, 14)
+    stoch_rsi = Stoch_RSI_zb(data, 3, 3, 14, 14)
 
-    wpr = WPR(data, 14)
+    wpr = WPR_zb(data, 14)
 
-    bbp = BBP(data, 13)
+    bbp = BBP_zb(data, 13)
 
-    uo = UO(data, 7, 14, 28)
+    uo = UO_zb(data, 7, 14, 28)
 
     stat_data = pd.concat([ ma10, ma20, ma30, ma50, ma100, ma200, ema10, ema20, ema30, ema50, ema100, ema200, ic, vwma, hm, rsi, stok, cci, adx, ao, mtm, macd_level, stoch_rsi, wpr, bbp, uo], axis=1)
 
@@ -868,7 +847,7 @@ def generate_stat_data(stock_code):
     
     stat_data = pd.concat([data, stat_data], axis=1).iloc[-1:].reset_index(drop=True)
 
-    lr = linear_regression_dfcf(data, [7,3,1])
+    lr = linear_regression_dfcf_zb(data, [7,3,1])
 
     stat_data = pd.concat([stat_data, lr], axis=1)
 
@@ -920,8 +899,8 @@ def ex_fund_valuation(db_path, table_name_guojin, table_name_result):
 
     for code in guojin_data['mt5代码']:
         try:
-            # 调用自定义函数generate_stat_data获取指定代码的估值比率数据
-            ratios = generate_stat_data(code)  # 假设这是一个有效的函数调用
+            # 调用自定义函数generate_stat_data_zb获取指定代码的估值比率数据
+            ratios = generate_stat_data_zb(code)  # 假设这是一个有效的函数调用
 
             # 从guojin_data中获取与当前代码匹配的行
             row_data_df = guojin_data[guojin_data['mt5代码'] == code]
@@ -986,8 +965,8 @@ def ex_fund_forex_valuation(db_path, table_name_guojin, table_name_result):
 
     for code in guojin_data['mt5代码']:
         try:
-            # 调用自定义函数generate_stat_data获取指定代码的估值比率数据
-            ratios = generate_stat_data(code)  # 假设这是一个有效的函数调用
+            # 调用自定义函数generate_stat_data_zb获取指定代码的估值比率数据
+            ratios = generate_stat_data_zb(code)  # 假设这是一个有效的函数调用
 
             # 从guojin_data中获取与当前代码匹配的行
             row_data_df = guojin_data[guojin_data['mt5代码'] == code]
@@ -1092,7 +1071,7 @@ if __name__ == '__main__':
     
     # 获取数据
     stock_code = 'AAPL.NAS'
-    df = generate_stat_data(stock_code)
+    df = generate_stat_data_zb(stock_code)
 
     # 数据库文件路径
     db_path = r"D:\wenjian\python\smart\data\backtest_data.db"

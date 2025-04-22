@@ -4,8 +4,56 @@ import pandas as pd
 import os
 import shutil
 import requests
+from datetime import datetime
 
 # 全局函数
+
+# 列出文件夹内容——获取指定文件夹中的所有文件和子文件夹
+def list_dir_contents(directory_path):
+    """
+    列出指定文件夹中的所有文件和子文件夹。
+    
+    参数:
+        directory_path: 要列出内容的文件夹路径
+        
+    返回:
+        包含三个列表的字典：
+        - 'files': 文件名列表
+        - 'folders': 子文件夹名列表
+        - 'full_paths': 所有项目的完整路径列表
+    """
+    try:
+        # 确保目录存在
+        if not os.path.exists(directory_path):
+            print(f"错误：目录 {directory_path} 不存在")
+            return None
+        
+        # 初始化结果列表
+        files = []
+        folders = []
+        full_paths = []
+        
+        # 遍历目录内容
+        for item in os.listdir(directory_path):
+            item_path = os.path.join(directory_path, item)
+            full_paths.append(item_path)
+            
+            # 区分文件和文件夹
+            if os.path.isfile(item_path):
+                files.append(item)
+            elif os.path.isdir(item_path):
+                folders.append(item)
+        
+        # 返回包含所有信息的字典
+        return {
+            'files': files,
+            'folders': folders,
+            'full_paths': full_paths
+        }
+    
+    except Exception as e:
+        print(f"列出目录内容时出错: {e}")
+        return None
 
 # 创建账号密码数据库及表，参数为数据库路径
 def create_account_database(db_data_path):
@@ -468,6 +516,126 @@ def process_data(data, db_path, data_table, top_3_table, price_w, prem_w, size_w
         return pd.DataFrame()
 
 
+# 递归列出文件夹内容——递归获取指定文件夹及其子文件夹中的所有文件
+def list_dir_recursive(directory_path, file_extension=None, include_subdirs=True):
+    """
+    递归列出指定文件夹及其所有子文件夹中的文件。
+    
+    参数:
+        directory_path: 要列出内容的文件夹路径
+        file_extension: 可选，文件扩展名过滤器（例如 '.py'）
+        include_subdirs: 是否包含子文件夹，默认为True
+        
+    返回:
+        包含所有满足条件文件信息的列表，每个元素是一个字典，包含：
+        - 'file_name': 文件名
+        - 'file_path': 文件的完整路径
+        - 'file_size': 文件大小（字节）
+        - 'modified_time': 文件最后修改时间
+    """
+    result = []
+    
+    try:
+        # 确保目录存在
+        if not os.path.exists(directory_path):
+            print(f"错误：目录 {directory_path} 不存在")
+            return result
+        
+        # 遍历目录内容
+        for root, dirs, files in os.walk(directory_path):
+            # 处理当前目录中的文件
+            for file in files:
+                # 如果指定了文件扩展名，则进行过滤
+                if file_extension and not file.endswith(file_extension):
+                    continue
+                    
+                file_path = os.path.join(root, file)
+                
+                try:
+                    # 获取文件信息
+                    file_stat = os.stat(file_path)
+                    file_info = {
+                        'file_name': file,
+                        'file_path': file_path,
+                        'file_size': file_stat.st_size,
+                        'modified_time': datetime.fromtimestamp(file_stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    result.append(file_info)
+                except Exception as e:
+                    print(f"无法获取文件 {file_path} 的信息: {e}")
+            
+            # 如果不包含子文件夹，在处理完当前目录后停止
+            if not include_subdirs:
+                break
+                
+        return result
+        
+    except Exception as e:
+        print(f"递归列出目录内容时出错: {e}")
+        return result
+
+
+# 搜索文件——在指定文件夹及其子文件夹中搜索包含特定内容的文件
+def search_files(directory_path, search_text, file_extension=None, case_sensitive=False, max_results=100):
+    """
+    在指定文件夹及其子文件夹中搜索包含特定文本内容的文件。
+    
+    参数:
+        directory_path: 要搜索的文件夹路径
+        search_text: 要搜索的文本内容
+        file_extension: 可选，文件扩展名过滤器（例如 '.py'）
+        case_sensitive: 是否区分大小写，默认为False
+        max_results: 最大结果数，默认为100
+        
+    返回:
+        包含搜索结果的列表，每个元素是一个字典，包含：
+        - 'file_path': 文件的完整路径
+        - 'line_number': 匹配行的行号
+        - 'line_content': 匹配行的内容
+    """
+    results = []
+    count = 0
+    
+    try:
+        # 获取所有符合条件的文件
+        all_files = list_dir_recursive(directory_path, file_extension)
+        
+        # 如果不区分大小写，转换搜索文本为小写
+        if not case_sensitive:
+            search_text = search_text.lower()
+        
+        # 搜索每个文件
+        for file_info in all_files:
+            file_path = file_info['file_path']
+            
+            try:
+                # 打开文件并逐行读取内容
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line_number, line in enumerate(f, 1):
+                        # 根据大小写敏感设置进行比较
+                        line_to_compare = line if case_sensitive else line.lower()
+                        
+                        if search_text in line_to_compare:
+                            result = {
+                                'file_path': file_path,
+                                'line_number': line_number,
+                                'line_content': line.strip()
+                            }
+                            results.append(result)
+                            count += 1
+                            
+                            # 达到最大结果数时停止
+                            if count >= max_results:
+                                return results
+            except Exception as e:
+                print(f"无法读取文件 {file_path}: {e}")
+                continue
+        
+        return results
+        
+    except Exception as e:
+        print(f"搜索文件时出错: {e}")
+        return results
 
 
 if __name__ == "__main__":

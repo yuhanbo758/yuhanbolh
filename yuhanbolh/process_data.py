@@ -171,6 +171,28 @@ def get_row(data, index):
     return data.iloc[[index]].reset_index(drop=True)
 
 
+
+
+# 获取data数据中的第几行数据
+def get_stock_list_from_db(db_path):
+    # 连接到数据库
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # 执行查询，获取“代码”列的数据
+    query = "SELECT 代码 FROM 指数价值"
+    cursor.execute(query)
+    results = cursor.fetchall()
+
+    # 将结果放入stock_list中
+    stock_list = [row[0] for row in results]
+
+    # 关闭连接
+    conn.close()
+
+    return stock_list
+
+
 # 获取简单移动平均线，参数有2个，一个是数据源，一个是日期
 def MA(data, n):
     MA = pd.Series(data['close'].rolling(n).mean(), name='MA_' + str(n))
