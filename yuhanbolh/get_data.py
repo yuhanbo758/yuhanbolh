@@ -745,3 +745,4 @@ def stock_info_global_em() -> pd.DataFrame:
     return temp_df
 
 
+
