@@ -17,7 +17,7 @@ import pandas as pd
 
 
 
-# 以下是打地鼠策略的函数
+# 以下是打地鼠策略的函数，参数分别是：数据库路径、数据表名称列表、输出数据表名称
 # 读取需要打地鼠的数据库中的持仓数据，并保存到数据表——与策略一起运行，与打地鼠策略无直接关系。
 def get_filtered_data(db_path: str, table_names: list, output_table_name: str):
     """
@@ -69,7 +69,7 @@ def get_filtered_data(db_path: str, table_names: list, output_table_name: str):
         if conn:
             conn.close()
 
-# 获取行情数据，并进行筛选，筛选出符合条件的标的
+# 从QMT获得行情数据，筛选出符合条件的标的数据
 def get_snapshot(code_list: List[str]):
     # 获取标的快照数据
     df = xtdata.get_full_tick(code_list)
@@ -104,6 +104,7 @@ def get_snapshot(code_list: List[str]):
 
 
 # 读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，最后打印合并后的数据。
+# 参数分别是：数据库路径、数据表名称、交易对象、账号
 def process_and_merge_data(db_path: str, table_name: str, xt_trader: str, acc: str):
     """
     读取指定数据库表中的'证券代码'列，获取对应的行情数据和持仓量，
@@ -148,7 +149,7 @@ def process_and_merge_data(db_path: str, table_name: str, xt_trader: str, acc: s
         conn.close()
 
 
-# 条件判断，并进行委托
+# 条件判断，并进行委托，参数分别是：数据库路径、数据表名称、账号、最大回撤跌幅、激活止盈的最大涨幅阈值、执行止盈的最小涨幅阈值、交易对象
 def mole_hunting_delegation(db_path: str, table_name: str, acc: str, drawdown: float, active_thres: float, deal_thres: float, xt_trader: str):
     """
     读取指定数据库表中的'证券代码'列，获取对应的行情数据，
@@ -205,7 +206,7 @@ def mole_hunting_delegation(db_path: str, table_name: str, acc: str, drawdown: f
 # 以上是打地鼠策略的函数
 
 
-# 以下是国债逆回购策略的函数
+# 以下是国债逆回购策略的函数，参数分别是：交易对象、账号
 # 比较沪深两市的一天期的买一国债逆回购，选择值大的进行卖出
 def place_order_based_on_asset(xt_trader: str, acc: str):
     # 检查连接结果

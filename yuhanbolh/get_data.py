@@ -14,13 +14,18 @@ from datetime import datetime, timedelta
 import baostock as bs
 from pytdx.hq import TdxHq_API
 import configparser
-from . import global_functions as gf
 from pandas import Series, DataFrame
 from typing import List
+
+xtdata.enable_hello = False
+
 
 # 定义全局变量
 global_tdx_ip = None
 global_tdx_port = None
+
+
+
 
 def init_global_address(cfg_file):
     """初始化全局服务器地址"""
@@ -267,7 +272,7 @@ def query_stock_data(stock_code, days_back=60, frequency="d", adjustflag="2"):
 def qmt_data_source(stock_code, days=7*365):
 
     # 计算7年前的日期
-    start_time = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d")
+    start_time = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
     # xtdata.download_history_data2([stock_code], period='1d', start_time=start_time, callback=on_progress)
 
     field_list = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'settelementPrice', 'openInterest', 'preClose', 'suspendFlag']
@@ -296,7 +301,7 @@ def on_progress(data):
 def qmt_data_source_download(stock_code, days=7*365):
 
     # 计算7年前的日期
-    start_time = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d")
+    start_time = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
     xtdata.download_history_data2([stock_code], period='1d', start_time=start_time, callback=on_progress)
 
     field_list = ['time', 'open', 'close', 'high', 'low', 'volume', 'amount', 'settelementPrice', 'openInterest', 'preClose', 'suspendFlag']
@@ -318,7 +323,7 @@ def qmt_data_source_download(stock_code, days=7*365):
 # 从国金qmt中获取指定代码的近7年行情数据
 def download_7_years_data(stock_list):
     # 计算7年前的日期
-    start_time = (datetime.datetime.now() - datetime.timedelta(days=7*365)).strftime("%Y%m%d")
+    start_time = (datetime.now() - timedelta(days=7*365)).strftime("%Y%m%d")
 
     # 下载近7年的历史数据
     xtdata.download_history_data2(stock_list, period='1d', start_time=start_time, callback=on_progress)
@@ -488,6 +493,63 @@ def get_valuation_ratios(code):
     return ratios
 
 
+# 先买先卖，用于基本技术止盈止损。获取未平仓的持仓数据，即未对冲的买入交易，参数是：表名列表
+def calculate_unhedged_transactions(db_path, table_names):
+    try:
+        # 连接到数据库
+        conn = sqlite3.connect(db_path)
+        
+        all_remaining_buys = pd.DataFrame()  # 初始化一个空的DataFrame来存储所有表的未对冲买入交易
+
+        for table_name in table_names:
+            # 从数据库读取数据到DataFrame
+            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+            # 获取所有不同的策略名称
+            strategies = df['策略名称'].unique()
+
+            # 遍历每个策略
+            for strategy_name in strategies:
+                # 筛选当前策略的交易记录
+                strategy_df = df[df['策略名称'] == strategy_name]
+
+                # 初始化未对冲买入成交数量
+                unhedged_transactions = pd.DataFrame()
+
+                # 遍历交易记录
+                for _, row in strategy_df.iterrows():
+                    if row['买卖'] == 1:  # 买入
+                        unhedged_transactions = pd.concat([unhedged_transactions, pd.DataFrame([row])], ignore_index=True)
+                    elif row['买卖'] == -1:  # 卖出
+                        sell_shares = row['成交数量']
+                        for i in unhedged_transactions.index:
+                            buy_txn = unhedged_transactions.loc[i]
+                            if buy_txn['证券代码'] == row['证券代码']:
+                                if buy_txn['成交数量'] <= sell_shares:
+                                    sell_shares -= buy_txn['成交数量']
+                                    unhedged_transactions.at[i, '成交数量'] = 0  # 对冲完全
+                                else:
+                                    unhedged_transactions.at[i, '成交数量'] -= sell_shares
+                                    break
+
+                # 筛选出未完全对冲的买入交易
+                remaining_buys = unhedged_transactions[(unhedged_transactions['成交数量'] > 0) & (unhedged_transactions['买卖'] == 1)]
+                
+                # 累积所有策略的未对冲买入交易
+                all_remaining_buys = pd.concat([all_remaining_buys, remaining_buys], ignore_index=True)
+
+        # 返回数据
+        return all_remaining_buys
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        # 关闭数据库连接
+        conn.close()
+
+
+
 # 获取持仓和收盘价，从而获得整体的交易日期和现金流，然后保存到数据库到r"D:\wenjian\python\smart\data\guojin_account.db"
 def position_close_process_data(table_name, db_path = r"D:\wenjian\python\smart\data\guojin_account.db"):
     
@@ -498,7 +560,7 @@ def position_close_process_data(table_name, db_path = r"D:\wenjian\python\smart\
 
     conn.close()
 
-    data = gf.calculate_unhedged_transactions(db_path, [table_name])
+    data = calculate_unhedged_transactions(db_path, [table_name])
 
     for index, row in data.iterrows():
         market_data = json_to_dfcf_qmt(row['证券代码'], 5)
@@ -527,36 +589,6 @@ def position_close_process_data(table_name, db_path = r"D:\wenjian\python\smart\
 
     return merged_data
 
-# 获取mt5中的行情数据，参数有3个：品种（必要），时间框架，天数。
-def get_mt5_data(symbol, timeframe=mt5.TIMEFRAME_D1, days_back=10):
-    # 连接到MetaTrader 5
-    if not mt5.initialize():
-        print("initialize() failed, error code =", mt5.last_error())
-        quit()
-    
-    try:
-        # 设置时间范围
-        current_time = datetime.now()
-        time_ago = current_time - timedelta(days=days_back)
-        
-        # 获取品种从指定时间前到当前时间的数据
-        rates = mt5.copy_rates_range(symbol, timeframe, time_ago, current_time)
-        
-        # 如果成功获取到数据，进行数据转换
-        if rates is not None and len(rates) > 0:
-            # 将数据转换为Pandas DataFrame
-            df = pd.DataFrame(rates)
-            # 转换时间格式
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            # 重命名 'tick_volume' 列为 'volume'
-            df.rename(columns={'tick_volume': 'volume'}, inplace=True)
-        else:
-            print(f"No rates data found for {symbol}")
-            df = pd.DataFrame()  # 如果没有数据，则返回一个空的DataFrame
-        return df
-    except Exception as e:
-        print(f"在获取数据时发生错误：{e}")
-        return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
 
 # 从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据，常用
 def get_exchange_rate(secid):

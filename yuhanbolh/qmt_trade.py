@@ -11,20 +11,19 @@ import random
 import os
 import schedule
 import time
-from . import send_email as se
 import threading
 
 # qmt的委托、交易和推送文件
 
 
-# 时间的转换和格式化函数
+# 时间的转换和格式化函数，参数：时间戳-'%Y-%m-%d %H:%M:%S'
 def convert_time(unix_timestamp):
     traded_time_utc = datetime.utcfromtimestamp(unix_timestamp)  # 注意这里改为 datetime.utcfromtimestamp
     traded_time_beijing = traded_time_utc + timedelta(hours=8)  # 注意这里改为 timedelta
     return traded_time_beijing.strftime('%Y-%m-%d %H:%M:%S')
 
 
-# 证券资产查询并保存到数据库manage_assets
+# 证券资产查询并保存到数据库manage_assets，参数：资产对象（固定）、数据库路径
 def save_stock_asset(asset, db_path):
     try:
         # 连接到SQLite数据库
@@ -51,7 +50,7 @@ def save_stock_asset(asset, db_path):
     except Exception as e:
         print("An error occurred:", e)
 
-# 获取持仓数据并保存到数据库account_holdings
+# 获取持仓数据并保存到数据库account_holdings，参数：持仓对象（固定）、数据库路径
 def save_positions(positions, db_path):
     try:
         # 连接到SQLite数据库
@@ -75,7 +74,7 @@ def save_positions(positions, db_path):
     except Exception as e:
         print("An error occurred:", e)
 
-# 查询当日委托并保存到数据库daily_orders
+# 查询当日委托并保存到数据库daily_orders，参数：委托对象（固定）、数据库路径
 def save_daily_orders(orders, db_path):
     try:
         # 连接到SQLite数据库
@@ -109,7 +108,7 @@ def save_daily_orders(orders, db_path):
     # 假设 orders 是一个包含所有订单信息的列表
     # save_daily_orders(orders, db_path)
 
-# 查询当日成交并保存到数据库daily_trades
+# 查询当日成交并保存到数据库daily_trades，参数：成交对象（固定）、数据库路径
 def save_daily_trades(trades, db_path):
     try:
         # 连接到SQLite数据库
@@ -144,7 +143,7 @@ def save_daily_trades(trades, db_path):
     # 假设 trades 是一个包含所有交易信息的列表
     # save_daily_trades(trades, db_path)
 
-# 查询除策略外的其他持仓，并将它保存到数据表other_positions
+# 查询除策略外的其他持仓，并将它保存到数据表other_positions，参数：数据库路径、策略表名称列表
 def calculate_remaining_holdings(db_path, strategy_tables):
     try:
         # 连接到SQLite数据库
@@ -293,7 +292,6 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
                     print(order_id, stock_code, order_type, order_volume, price)
                 except Exception as e:
                     error_message = f"报单操作失败，原因：{str(e)}"
-                    se.send_other_email(error_message)
                     print(f"报单操作失败，原因：{e}")
                     continue
         else:
@@ -304,11 +302,8 @@ def place_orders(db_path, table_name, trade_table_name, xt_trader, acc):
         # 无论是否出现异常，都关闭数据库连接
         conn.close()
 
-# 使用示例，参数分别是：数据库路径、委托数据表名称、成交数据表名称、判断处函数前缀（不改动）、账号（不改动）
-# place_orders(db_path, 'your_table_name', 'your_trade_table_name', xt_trader, acc)
 
-
-# 比较沪深两市的一天期的买一国债逆回购，选择值大的进行卖出
+# 比较沪深两市的一天期的买一国债逆回购，选择值大的进行卖出，参数分别是：交易对象（固定）、账号（固定）、数据对象（固定）
 def place_order_based_on_asset(xt_trader, acc, xtdata):
     # 检查连接结果
     connect_result = xt_trader.connect()
@@ -558,7 +553,7 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         print(status.account_id, status.account_type, status.status)
 
 
-# 保存证券资产、委托、成交和持仓数据到数据库
+# 保存证券资产、委托、成交和持仓数据到数据库，参数分别是：交易对象（固定）、账号（固定）、数据库路径
 def save_daily_data(xt_trader, acc, db_path):
     """
     保存当日的持仓、委托和成交数据到数据库
@@ -604,18 +599,7 @@ def save_daily_data(xt_trader, acc, db_path):
 
 
 
-# 定义装饰器函数，用于处理任务函数中的异常
-def se_send_email_on_error(func):
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            error_message = f"在运行 {func.__name__} 函数时发生错误：{str(e)}"
-            se.send_email('sender_email', 'sender_password', 'receiver_email', error_message)
-    return wrapper
-
-# 查询未成交的委托，然后进行逐一撤单
-@se_send_email_on_error
+# 查询未成交的委托，然后进行逐一撤单，参数分别是：交易对象（固定）、账号（固定）
 def cancel_all_orders(xt_trader, acc):
     try:
         orders = xt_trader.query_stock_orders(acc, True)
@@ -648,8 +632,7 @@ def run_weekdays_at(time_str, function):
     schedule.every().thursday.at(time_str).do(function)
     schedule.every().friday.at(time_str).do(function)
 
-
-@se_send_email_on_error
+# 计划任务
 def schedule_jobs():
     # 全局变量，用于判断计划任务是否在运行
     global schedule_thread
@@ -688,9 +671,6 @@ def schedule_jobs():
     finally:
         schedule_thread = None
         # 在这里确保在退出函数前将线程运行状态设置为False
-
-
-
 
 
 

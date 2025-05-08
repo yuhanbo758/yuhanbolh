@@ -8,7 +8,7 @@ from datetime import datetime
 
 # 全局函数
 
-# 列出文件夹内容——获取指定文件夹中的所有文件和子文件夹
+# 列出文件夹内容——获取指定文件夹中的所有文件和子文件夹，参数：文件夹路径
 def list_dir_contents(directory_path):
     """
     列出指定文件夹中的所有文件和子文件夹。
@@ -145,7 +145,7 @@ def add_account(project_name, username, password):
         return False
 
 
-# 将数据上传到远程数据库
+# 将数据上传到远程数据库，参数分别是：数据库路径、数据表名称列表
 def copy_table_to_mysql(sqlite_db_path: str, table_names: list):
 
     host='111.229.252.56'
@@ -200,7 +200,7 @@ def copy_table_to_mysql(sqlite_db_path: str, table_names: list):
     mysql_conn.close()
 
 
-# 先买先卖，用于基本技术止盈止损。获取未平仓的持仓数据，即未对冲的买入交易，参数是：表名列表
+# 先买先卖，用于基本技术止盈止损。获取未平仓的持仓数据，即未对冲的买入交易，参数分别是：数据库路径、表名列表
 def calculate_unhedged_transactions(db_path, table_names):
     try:
         # 连接到数据库
@@ -256,7 +256,7 @@ def calculate_unhedged_transactions(db_path, table_names):
         conn.close()
 
 
-# 后买先卖，用于网格止盈止损。获取未平仓的持仓数据，即未对冲的买入交易，参数是：表名列表
+# 后买先卖，用于网格止盈止损。获取未平仓的持仓数据，即未对冲的买入交易，参数分别是：数据库路径、表名列表
 # calculate_unhedged_transactions_sbb(db_path, ['实测交易数据'], '实测持仓')
 def calculate_unhedged_transactions_sbb(db_path, table_names):
     try:
@@ -516,7 +516,7 @@ def process_data(data, db_path, data_table, top_3_table, price_w, prem_w, size_w
         return pd.DataFrame()
 
 
-# 递归列出文件夹内容——递归获取指定文件夹及其子文件夹中的所有文件
+# 递归列出文件夹内容——递归获取指定文件夹及其子文件夹中的所有文件，参数分别是：文件夹路径、文件扩展名、是否包含子文件夹
 def list_dir_recursive(directory_path, file_extension=None, include_subdirs=True):
     """
     递归列出指定文件夹及其所有子文件夹中的文件。
@@ -575,7 +575,7 @@ def list_dir_recursive(directory_path, file_extension=None, include_subdirs=True
         return result
 
 
-# 搜索文件——在指定文件夹及其子文件夹中搜索包含特定内容的文件
+# 搜索文件——在指定文件夹及其子文件夹中搜索包含特定内容的文件，参数分别是：文件夹路径、搜索文本、文件扩展名、是否区分大小写、最大结果数
 def search_files(directory_path, search_text, file_extension=None, case_sensitive=False, max_results=100):
     """
     在指定文件夹及其子文件夹中搜索包含特定文本内容的文件。
@@ -640,3 +640,5 @@ def search_files(directory_path, search_text, file_extension=None, case_sensitiv
 
 if __name__ == "__main__":
     db_path = r'D:\wenjian\python\smart\data\mt5.db'
+    aa = check_account("password", "GOOGLE_API_KEY")
+    print(aa)

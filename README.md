@@ -9,7 +9,7 @@
 微信公众号：余汉波
 ![公众号](https://gdsx.sanrenjz.com/PicGo/qrcode_for_gh_a0ee12457f59_258.jpg)
 
-# 需要开QMT的可以联系我，微信：yuhanbo758
+# 需要证券开户开QMT的可以联系我，微信：yuhanbo758
 ![微信](https://gdsx.sanrenjz.com/PicGo/%E5%BE%AE%E4%BF%A1.png)
 
 schedule

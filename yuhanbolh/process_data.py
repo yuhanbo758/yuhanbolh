@@ -11,7 +11,6 @@ from scipy import stats
 import math
 from datetime import datetime, timedelta
 from scipy import optimize
-from . import mt5_ic_custom as mic
 from xtquant import xtdata
 import pywencai
 
@@ -38,7 +37,7 @@ def get_score(element_pj):
         return 0  # 或者您可以返回一个适当的默认值或错误标志
 
 
-# 通过代码，获取价值大师的价值线
+# 通过代码，获取价值大师的价值线。参数是股票代码，例如get_valuation_ratios("AAPL.NAS")
 def get_valuation_ratios(code):
     try:
         url = f'https://www.gurufocus.cn/stock/{code}/term/gf_value'
@@ -47,7 +46,7 @@ def get_valuation_ratios(code):
 
         # 获取大师价值线
         element_jzx = soup.select_one('#term-page-title').text.strip()
-        element_jzx = re.findall("\d+\.\d+", element_jzx)[0]
+        element_jzx = re.findall(r"\d+\.\d+", element_jzx)[0]
 
         # 获取大师价值估值评价
         element_pj = soup.select_one('#q-app > div > div > main > div:nth-child(3) > div > div.column.term-container.col > div.content-section.q-pa-md.q-mt-sm.q-card.q-card--bordered.q-card--flat.no-shadow > div > div:nth-child(9) > span').text.strip()
@@ -84,7 +83,7 @@ def get_valuation_ratios(code):
         return None  # 或者您可以返回一个适当的默认值或错误标志
 
 
-# 通过读取excel中的列“代码”，从而获取价值大师价格
+# 通过读取excel中的列“代码”，从而获取价值大师价格。参数分别是：数据库路径、表名。例如get_all_valuation_ratios_db(db_path, "指数价值")
 def get_all_valuation_ratios_db(db_path, table_name):
     """
     从数据库表中读取“价值代码”，然后获取相应的价值大师价格。
@@ -125,7 +124,7 @@ def get_all_valuation_ratios_db(db_path, table_name):
 
 
 
-# 将数据保存为sql
+# 将数据保存为sql。参数分别是：自定义函数、数据库路径、原始表名、新表名。例如save_data(get_all_valuation_ratios_db, db_path, "指数价值", "指数价值_sql")
 def save_data(function, db_path, original_table_name, new_table_name):
     """
     执行 function 以获取数据，并将该数据与 original_table_name 表的内容合并，
@@ -166,14 +165,14 @@ def save_data(function, db_path, original_table_name, new_table_name):
         conn.close()
 
 
-# 获取data数据中的第几行数据
+# 获取data数据中的第几行数据。参数分别是：数据源、行数。例如get_row(data, 0)
 def get_row(data, index):
     return data.iloc[[index]].reset_index(drop=True)
 
 
 
 
-# 获取data数据中的第几行数据
+# 获取data数据中的第几行数据。参数分别是：数据库路径。例如get_stock_list_from_db(db_path)
 def get_stock_list_from_db(db_path):
     # 连接到数据库
     conn = sqlite3.connect(db_path)
@@ -193,13 +192,13 @@ def get_stock_list_from_db(db_path):
     return stock_list
 
 
-# 获取简单移动平均线，参数有2个，一个是数据源，一个是日期
+# 获取简单移动平均线，参数有2个，一个是数据源，一个是日期。例如MA(data, 20)
 def MA(data, n):
     MA = pd.Series(data['close'].rolling(n).mean(), name='MA_' + str(n))
     return MA.dropna()
 
 
-# 获取指数移动平均线，参数有2个，一个是数据源，一个是日期
+# 获取指数移动平均线，参数有2个，一个是数据源，一个是日期。例如EMA(data, 20)
 def EMA(data, n):
     EMA = pd.Series(data['close'].ewm(span=n, min_periods=n).mean(), name='EMA_' + str(n))
     return EMA.dropna()
@@ -234,7 +233,7 @@ def VWMA(data, n):
     return VWMA.dropna()
 
 
-# 计算Hull MA船体移动平均线 Hull MA (data,9)，参数有2，一个是数据源，另一个是日期，一般为9
+# 计算Hull MA船体移动平均线 Hull MA (data,9)，参数有2，一个是数据源，另一个是日期，一般为9。例如HullMA(data, 9)
 def HullMA(data, n=9):
     def wma(series, period):
         weights = np.arange(1, period + 1)
@@ -451,7 +450,7 @@ def json_to_dfcf(stock_code, days=365, fqt=1, klt=101):
     
 
 
-# 从东财获取8年数据，计算各种指标指标，参数为股票代码
+# 从东财获取8年数据，计算各种指标指标，参数为股票代码。例如generate_stat_data("AAPL.NAS")
 def generate_stat_data(stock_code):
     data = json_to_dfcf(stock_code, days=365*8, fqt=1, klt=101)
 
@@ -506,62 +505,8 @@ def generate_stat_data(stock_code):
     return stat_data_after_120
 
 
-# 从mt5获取8年数据，计算各种指标指标，参数为股票代码
-def generate_stat_data_mt5(stock_code):
-    data = mic.get_mt5_data(stock_code)
 
-    ma10 = MA(data, 10)
-    ma20 = MA(data, 20)
-    ma30 = MA(data, 30)
-    ma50 = MA(data, 50)
-    ma100 = MA(data, 100)
-    ma200 = MA(data, 200)
-
-    ema10 = EMA(data, 10)
-    ema20 = EMA(data, 20)
-    ema30 = EMA(data, 30)
-    ema50 = EMA(data, 50)
-    ema100 = EMA(data, 100)
-    ema200 = EMA(data, 200)
-
-    ic = ichimoku_cloud(data,9, 26, 52, 26)
-
-    vwma = VWMA(data, 20)
-
-    hm = HullMA(data, 9)
-
-    rsi = RSI(data, 14)
-
-    wpr = WPR(data, 14)
-
-    cci = CCI(data, 20)
-
-    adx = ADX(data, 14)
-
-    stok = STOK(data, 14, 3, 3)
-
-    ao = AO(data)
-
-    mtm = MTM(data)
-
-    madc_level = MACD_Level(data, 12, 26)
-
-    stoch_rsi = Stoch_RSI(data, 3, 3, 14, 14)
-
-    bbp = BBP(data, 13)
-
-    uo = UO(data, 7, 14, 28)
-
-    lr = linear_regression_dfcf(data, [10, 20, 60, 120])
-
-    stat_data = pd.concat([data, ma10, ma20, ma30, ma50, ma100, ma200, ema10, ema20, ema30, ema50, ema100, ema200, ic, vwma, hm, rsi,  cci, adx, wpr, stok, ao, mtm, madc_level, stoch_rsi, bbp, uo, lr], axis=1) 
-
-    # 获取众120个数据之后的数据，因为线性回归计算的最长的一个日期是120交易日
-    stat_data_after_120 = stat_data.iloc[119:]
-    return stat_data_after_120
-
-
-# 计算xirr年化收益率
+# 计算xirr年化收益率。参数分别是：现金流、日期。例如calculate_xirr(cash_flows, dates)
 def calculate_xirr(cash_flows, dates):
     dates = [pd.to_datetime(date) for date in dates]
     if len(cash_flows) == 0 or len(cash_flows) != len(dates):
@@ -581,7 +526,7 @@ def calculate_xirr(cash_flows, dates):
     except (RuntimeError, OverflowError, FloatingPointError):
         return -1
 
-# 计算年化收益率、现金流之和和净现值
+# 计算年化收益率、现金流之和和净现值。参数分别是：表名。例如calculate_annual_return("外汇")
 def calculate_annual_return(table_name):
     db_path = r"D:\wenjian\python\smart\data\guojin_account.db"
     conn = sqlite3.connect(db_path)
@@ -619,7 +564,7 @@ def calculate_annual_return(table_name):
 
     return result
 
-# 股票代码增加市场信息
+# 股票代码增加市场信息。参数是股票代码，例如get_processed_code("000001.SZ")
 def get_processed_code(stock_code):
     stock_code = str(stock_code)
 
@@ -640,7 +585,7 @@ def get_processed_code(stock_code):
 
     return f"{stock_code}.{market}"
 
-# 通达信代码转换
+# 通达信代码转换。参数是股票代码，例如tongda_code_convert("000001.SZ")
 def tongda_code_convert(stock_code):
     stock_code = str(stock_code)
     if stock_code.startswith('0'):
@@ -651,7 +596,7 @@ def tongda_code_convert(stock_code):
         return stock_code  # 如果不满足条件，保持原样
 
 
-# 清洗execute_general_trade表
+# 清洗execute_general_trade表。参数是数据库连接，例如clean_execute_general_trade(conn)
 def clean_execute_general_trade(conn):
     """
     清洗execute_general_trade表
@@ -670,7 +615,7 @@ def clean_execute_general_trade(conn):
     conn.commit()
 
 
-# 插入订单到place_general_order表
+# 插入订单到place_general_order表。参数分别是：数据库游标、数据库连接、证券代码、委托价格、委托数量、买卖、策略名称、委托备注、日期时间。例如insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str)
 def insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark, datetime_str):
     """
     插入订单到place_general_order表
@@ -682,7 +627,7 @@ def insert_order(cursor, conn, code, price, quantity, buy_sell, strategy, remark
     conn.commit()
 
 
-# 删除receive_condition表中的行
+# 删除receive_condition表中的行。参数分别是：数据库游标、数据库连接、行id。例如delete_receive_condition_row(cursor, conn, rowid)
 def delete_receive_condition_row(cursor, conn, rowid):
     """
     删除receive_condition表中的行
@@ -691,7 +636,7 @@ def delete_receive_condition_row(cursor, conn, rowid):
     conn.commit()
 
 
-# 删除execute_general_trade表中的行
+# 删除execute_general_trade表中的行。参数分别是：数据库游标、数据库连接、策略名称、证券代码。例如delete_execute_general_trade_row(cursor, conn, strategy, code)
 def delete_execute_general_trade_row(cursor, conn, strategy, code):
     """
     删除execute_general_trade表中的行
@@ -700,7 +645,7 @@ def delete_execute_general_trade_row(cursor, conn, strategy, code):
     conn.commit()
 
 
-# 处理价差网格策略
+# 处理价差网格策略。参数分别是：数据库游标、数据库连接、tick数据、证券代码、委托价格、委托数量、买卖、策略名称、委托备注、日期时间、行id。例如process_price_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid)
 def process_price_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid):
     """
     处理价差网格策略
@@ -739,7 +684,7 @@ def process_price_grid(cursor, conn, tick, code, price, quantity, buy_sell, stra
                 pass  # 不做任何操作
     # 不删除receive_condition表中的行
 
-# 处理振幅网格策略
+# 处理振幅网格策略。参数分别是：数据库游标、数据库连接、tick数据、证券代码、委托价格、委托数量、买卖、策略名称、委托备注、日期时间、行id。例如process_amplitude_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid)
 def process_amplitude_grid(cursor, conn, tick, code, price, quantity, buy_sell, strategy, remark, datetime_str, rowid):
     """
     处理振幅网格策略
@@ -790,7 +735,7 @@ def process_amplitude_grid(cursor, conn, tick, code, price, quantity, buy_sell, 
     # 不删除receive_condition表中的行
 
 
-# 处理监控策略
+# 处理监控策略。参数分别是：行数据、数据库游标、数据库连接。例如process_immediate_rows(rows, cursor, conn)
 def process_immediate_rows(rows, cursor, conn):
     """
     处理即时行数据
@@ -879,7 +824,7 @@ def process_immediate_rows(rows, cursor, conn):
 
 
 
-# 问财根据委托备注获取数据
+# 问财根据委托备注获取数据。参数分别是：委托备注、委托数量、策略名称。例如portfolio_rotation(order_note, order_quantity, strategy_name)
 def portfolio_rotation(order_note, order_quantity, strategy_name):
     try:
         if '基金' in order_note:
