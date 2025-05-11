@@ -23,6 +23,8 @@ def convert_time(unix_timestamp):
     return traded_time_beijing.strftime('%Y-%m-%d %H:%M:%S')
 
 
+
+
 # 证券资产查询并保存到数据库manage_assets，参数：资产对象（固定）、数据库路径
 def save_stock_asset(asset, db_path):
     try:

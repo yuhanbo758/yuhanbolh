@@ -160,7 +160,6 @@ from .qmt_trade import (
     save_daily_trades,
     save_positions,
     save_stock_asset,
-    se_send_email_on_error,
     sort_and_update_table
 )
 
@@ -318,7 +317,6 @@ __all__ = [
     "save_daily_trades",
     "save_positions",
     "save_stock_asset",
-    "se_send_email_on_error",
     "sort_and_update_table",
     
     # 邮件发送

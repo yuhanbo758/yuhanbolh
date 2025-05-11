@@ -65,7 +65,7 @@ def wencai_conditional_query_nz100(query):
         return pd.DataFrame()
     
 
-# 从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据，常用。参数是股票代码，例如133.USDCNH
+# 从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据，常用
 def get_exchange_rate(secid):
     """
     从东方财富网的API获取指定股票代码的汇率信息，并提取汇率数据。
@@ -106,7 +106,7 @@ def get_exchange_rate(secid):
         return "请求过程中发生异常：" + str(e)
 
 
-# 获取保存汇率数据到数据库，常用。参数分别是：数据库路径、表名
+# 获取保存汇率数据到数据库，常用
 def save_exchange_rates_to_db(db_path, table_name):
     """
     获取所需的所有汇率，计算兑换到CNH的汇率，并将结果保存到数据库中。
@@ -289,7 +289,7 @@ def get_valuation_ratios(code):
 
 
 
-# 通过读取excel中的列“代码”，从而获取价值大师价格。参数分别是：数据库路径、表名
+# 通过读取excel中的列“代码”，从而获取价值大师价格
 def get_all_valuation_ratios_db(db_path, table_name):
     """
     从数据库表中读取“价值代码”，然后获取相应的价值大师价格。
@@ -330,7 +330,7 @@ def get_all_valuation_ratios_db(db_path, table_name):
 
 
 
-# 从MT5获取指定品种的8年历史日线数据。参数是品种代码，例如133.USDCNH
+# 从MT5获取指定品种的8年历史日线数据
 def get_mt5_data(symbol):
     """
     从MT5获取指定品种的历史日线数据，并返回包含所有数据的DataFrame。
@@ -369,7 +369,7 @@ def get_mt5_data(symbol):
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
     
 
-# 从MT5获取指定品种的历史日线数据，日期长度可自定义，参数分别是交易品种和天数。例如get_mt5_data_with_days("133.USDCNH", 365*8)
+# 从MT5获取指定品种的历史日线数据，日期长度可自定义，参数分别是交易品种和天数
 def get_mt5_data_with_days(symbol, days=365*8):
     """
     从MT5获取指定品种的历史日线数据，日期长度可自定义，并返回包含所有数据的DataFrame。
@@ -410,12 +410,12 @@ def get_mt5_data_with_days(symbol, days=365*8):
         return pd.DataFrame()  # 发生异常时返回一个空的DataFrame
 
 
-# 获取data数据中的第几行数据。参数分别是：数据源、行数。例如get_row(data, 0)
+# 获取data数据中的第几行数据
 def get_row(data, index):
     return data.iloc[[index]].reset_index(drop=True)
 
 
-# 获取data数据中的第几行数据。参数分别是：数据库路径、表名。例如get_stock_list_from_db(db_path, "指数价值")
+# 获取data数据中的第几行数据
 def get_stock_list_from_db():
     # 连接到数据库
     conn = sqlite3.connect(db_path)
@@ -435,7 +435,6 @@ def get_stock_list_from_db():
     return stock_list
 
 
-# 获取指数移动平均线，参数有2个，一个是数据源，一个是日期。例如EMA_zb(data, 20)
 def MA_zb(data, n):
     MA = pd.Series(data['close'].rolling(n).mean(), name='MA_' + str(n))
     close = data['close']
@@ -443,7 +442,7 @@ def MA_zb(data, n):
     return pd.DataFrame(signal, columns=['MA_' + str(n)])  # 修改这行
 
 
-# 获取指数移动平均线，参数有2个，一个是数据源，一个是日期。例如EMA_zb(data, 20)
+# 获取指数移动平均线，参数有2个，一个是数据源，一个是日期
 def EMA_zb(data, n):
     EMA = pd.Series(data['close'].ewm(span=n, min_periods=n).mean(), name='EMA_' + str(n))
     close = data['close']
@@ -933,7 +932,7 @@ def ex_fund_valuation(db_path, table_name_guojin, table_name_result):
 
     return all_data
 
-# 获取指数外汇总评价数据，并保存到数据库，参数分别是：数据库路径、表名
+# 获取指数外汇总评价数据，并保存到数据库
 def ex_fund_forex_valuation(db_path, table_name_guojin, table_name_result):
     """
     从指定的表中读取数据，获取估值比率，并将结果保存到新表中。
@@ -999,7 +998,7 @@ def ex_fund_forex_valuation(db_path, table_name_guojin, table_name_result):
     return all_data
 
 
-# 计算总和，参数分别是：数据库路径、EA_id（平仓策略代码）、magic（持仓策略代码）
+# 参数：数据库路径、EA_id（平仓策略代码）、magic（持仓策略代码）
 def calculate_totals(db_path, ea_id, magic):
     # 连接到SQLite数据库
     conn = sqlite3.connect(db_path)
