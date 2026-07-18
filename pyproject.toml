@@ -1,0 +1,5 @@
+[build-system]
+# 使用 setuptools 作为构建后端，使 `python -m build` 能稳定生成 wheel 和源码包。
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+

@@ -314,6 +314,229 @@ def calculate_unhedged_transactions_sbb(db_path, table_names):
         conn.close()
 
 
+
+
+
+# 针对单个数据表的不同策略进行对冲，计算未对冲交易，支持先买先卖和后买先卖两种模式.例子：calculate_unhedged_transactions_unified(db_path, 'execute_fund_grid_trade', 'execute_fund_basics_technical_trade')
+def calculate_unhedged_transactions_unified(db_path, table_name, strategy_name=None, is_fifo=True):
+    """
+    计算指定策略的未对冲交易数据
+    
+    参数:
+    db_path: 数据库路径
+    table_name: 单一表名
+    strategy_name: 策略名称，可以是字符串、字符串列表，或None/空字符串（处理所有策略）
+    is_fifo: True为先买先卖(FIFO)，False为后买先卖(LIFO)
+    
+    返回:
+    处理后的DataFrame，删除完全对冲的数据，保留对冲后的数据
+    """
+    
+    def process_strategy_data(strategy_df, is_fifo):
+        """内部函数：处理单个策略的对冲计算"""
+        if strategy_df.empty:
+            return pd.DataFrame()
+        
+        # 初始化未对冲买入交易列表
+        unhedged_transactions = pd.DataFrame()
+        
+        # 按时间排序交易记录
+        strategy_df = strategy_df.sort_values('成交时间')
+        
+        # 遍历交易记录进行对冲计算
+        for _, row in strategy_df.iterrows():
+            if row['买卖'] == 1:  # 买入
+                unhedged_transactions = pd.concat([unhedged_transactions, pd.DataFrame([row])], ignore_index=True)
+            elif row['买卖'] == -1:  # 卖出
+                sell_shares = row['成交数量']
+                
+                # 根据is_fifo参数决定对冲顺序
+                if is_fifo:
+                    # 先买先卖：正序遍历
+                    indices = unhedged_transactions.index
+                else:
+                    # 后买先卖：逆序遍历
+                    indices = reversed(unhedged_transactions.index)
+                
+                for i in indices:
+                    if i not in unhedged_transactions.index:
+                        continue
+                        
+                    buy_txn = unhedged_transactions.loc[i]
+                    if buy_txn['证券代码'] == row['证券代码'] and buy_txn['成交数量'] > 0:
+                        if buy_txn['成交数量'] <= sell_shares:
+                            # 完全对冲，删除该买入记录
+                            sell_shares -= buy_txn['成交数量']
+                            unhedged_transactions = unhedged_transactions.drop(i)
+                        else:
+                            # 部分对冲，更新买入数量
+                            unhedged_transactions.at[i, '成交数量'] -= sell_shares
+                            unhedged_transactions.at[i, '成交金额'] = unhedged_transactions.at[i, '成交数量'] * unhedged_transactions.at[i, '成交均价']
+                            sell_shares = 0
+                            break
+                        
+                        if sell_shares <= 0:
+                            break
+        
+        # 重置索引
+        unhedged_transactions = unhedged_transactions.reset_index(drop=True)
+        return unhedged_transactions
+    
+    conn = None
+    try:
+        # 连接到数据库
+        conn = sqlite3.connect(db_path)
+        
+        # 从数据库读取指定表的数据
+        df = pd.read_sql(f"SELECT * FROM `{table_name}`", conn)
+        
+        if df.empty:
+            return pd.DataFrame()
+        
+        # 确定要处理的策略列表
+        if not strategy_name:
+            # 如果策略名称为空，处理所有策略
+            strategies_to_process = df['策略名称'].unique()
+            print(f"找到 {len(strategies_to_process)} 个策略: {list(strategies_to_process)}")
+        elif isinstance(strategy_name, list):
+            # 如果是列表，处理列表中的策略
+            strategies_to_process = strategy_name
+            print(f"处理指定的 {len(strategies_to_process)} 个策略: {strategies_to_process}")
+        else:
+            # 如果是单个字符串，转换为列表
+            strategies_to_process = [strategy_name]
+            print(f"处理单个策略: {strategy_name}")
+        
+        # 检查数据的买卖方向分布
+        buy_sell_counts = df['买卖'].value_counts()
+        print(f"买卖方向分布: {dict(buy_sell_counts)}")
+        
+        all_unhedged_transactions = pd.DataFrame()
+        
+        # 对每个策略分别进行对冲计算
+        for strategy in strategies_to_process:
+                strategy_df = df[df['策略名称'] == strategy].copy()
+                strategy_buy_sell = strategy_df['买卖'].value_counts()
+                print(f"策略 '{strategy}': 总记录{len(strategy_df)}条, 买卖分布{dict(strategy_buy_sell)}")
+                
+                strategy_result = process_strategy_data(strategy_df, is_fifo)
+                print(f"策略 '{strategy}' 对冲后剩余 {len(strategy_result)} 条记录")
+                
+                if not strategy_result.empty:
+                    all_unhedged_transactions = pd.concat([all_unhedged_transactions, strategy_result], ignore_index=True)
+            
+        # 将处理后的数据写回数据库
+        cursor = conn.cursor()
+        
+        if not strategy_name:
+            # 如果处理所有策略，清空整个表
+            cursor.execute(f"DELETE FROM `{table_name}`")
+        else:
+            # 如果处理指定策略，只删除这些策略的数据
+            if isinstance(strategy_name, list):
+                placeholders = ','.join(['?' for _ in strategy_name])
+                cursor.execute(f"DELETE FROM `{table_name}` WHERE 策略名称 IN ({placeholders})", strategy_name)
+            else:
+                cursor.execute(f"DELETE FROM `{table_name}` WHERE 策略名称 = ?", (strategy_name,))
+        
+        if not all_unhedged_transactions.empty:
+            all_unhedged_transactions.to_sql(table_name, conn, if_exists='append', index=False)
+        
+        conn.commit()
+        return all_unhedged_transactions
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return pd.DataFrame()
+        
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+
+# 批量对冲多个数据表单一策略（比如将不同策略的成交写入不同数据表的数据），策略持仓处理函数，保存到原表，参数是数据库路径和表名列表。调用例子：process_strategy_positions_original_table(db_path, ['execute_fund_grid_trade'], ['execute_fund_basics_technical_trade'])
+def process_strategy_positions_original_table(db_path, fifo_table_names=None, lifo_table_names=None):
+    """
+    处理策略持仓数据
+    
+    参数:
+    db_path: 数据库路径
+    fifo_table_names: 先进先出表名列表，默认为空
+    lifo_table_names: 后进先出表名列表，默认为空
+    
+    返回:
+    处理后的DataFrame
+    """
+    conn = None  # 初始化conn变量
+    
+    try:
+        # 设置默认值
+        if fifo_table_names is None:
+            fifo_table_names = []
+        if lifo_table_names is None:
+            lifo_table_names = []
+            
+        # 创建数据库连接
+        conn = sqlite3.connect(db_path)
+        
+        cursor = conn.cursor()
+        
+        # 分别处理每个FIFO表
+        for table_name in fifo_table_names:
+            try:
+                # 对单个表进行FIFO对冲计算
+                df_table = calculate_unhedged_transactions(db_path, [table_name])
+                print(f"FIFO表 {table_name} 处理完成，共处理 {len(df_table)} 条记录")
+                
+                # 删除原表数据
+                cursor.execute(f"DELETE FROM {table_name}")
+                
+                # 将处理后的数据重新插入到原表中
+                if not df_table.empty:
+                    df_table.to_sql(table_name, conn, if_exists='append', index=False)
+                    
+            except sqlite3.OperationalError as e:
+                print(f"处理FIFO表 {table_name} 时出错: {e}")
+                continue
+                
+        # 分别处理每个LIFO表
+        for table_name in lifo_table_names:
+            try:
+                # 对单个表进行LIFO对冲计算
+                df_table = calculate_unhedged_transactions_sbb(db_path, [table_name])
+                print(f"LIFO表 {table_name} 处理完成，共处理 {len(df_table)} 条记录")
+                
+                # 删除原表数据
+                cursor.execute(f"DELETE FROM {table_name}")
+                
+                # 将处理后的数据重新插入到原表中
+                if not df_table.empty:
+                    df_table.to_sql(table_name, conn, if_exists='append', index=False)
+                    
+            except sqlite3.OperationalError as e:
+                print(f"处理LIFO表 {table_name} 时出错: {e}")
+                continue
+                
+        conn.commit()
+        
+        # 返回处理结果的汇总信息
+        total_tables = len(fifo_table_names) + len(lifo_table_names)
+        print(f"所有表处理完成，共处理 {total_tables} 个表")
+        return pd.DataFrame({'message': [f'处理完成，共处理 {total_tables} 个表']})
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return pd.DataFrame()  # 返回空DataFrame
+        
+    finally:
+        if conn is not None:  # 只有当conn被创建时才关闭
+            conn.close()
+
+
+
+
+
 # 策略持仓函数，参数是数据库路径
 def open_positions(db_path):
     try:

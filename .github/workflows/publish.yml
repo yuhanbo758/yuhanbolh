@@ -1,45 +1,102 @@
-name: Publish
- 
+name: 自动发布到 PyPI
+
 on:
+  # 每次向 main 推送代码时自动生成并发布一个新版本。
   push:
-    tags:
-      - '*'
- 
+    branches:
+      - main
+  # 允许在 Actions 页面手动重跑发布流程，用于处理临时网络故障。
+  workflow_dispatch:
+
+# 发布任务需要提交自动生成的版本号和标签；OIDC 权限用于生成 PyPI 数字证明。
+permissions:
+  contents: write
+  id-token: write
+
+# 同一仓库同时只允许一个发布任务，避免并发计算出相同版本。
+concurrency:
+  group: publish-yuhanbolh-to-pypi
+  cancel-in-progress: false
+
 jobs:
   publish:
+    # 自动版本提交会再次触发 push；跳过机器人事件以防止无限发布循环。
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package:
-          - fast-dev-cli
-          - fastdevcli-slim
-    permissions:
-      id-token: write
- 
+    environment:
+      name: pypi
+      url: https://pypi.org/project/yuhanbolh/
+
     steps:
-      - name: Dump GitHub context
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"
-      - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: 检出 main 最新代码
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 同步可能排队等待期间产生的提交
+        run: git pull --ff-only origin main
+
+      - name: 配置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Install dependencies
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装构建与校验工具
+        run: python -m pip install --upgrade build twine
+
+      - name: 获取 PyPI 当前版本并生成下一版本
+        id: version
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install build
-      - name: Build package
+          # PyPI 是线上发布事实来源；查询失败时直接停止，避免产生错误或重复版本。
+          CURRENT_VERSION="$(python - <<'PY'
+          import json
+          import urllib.request
+
+          with urllib.request.urlopen(
+              "https://pypi.org/pypi/yuhanbolh/json", timeout=30
+          ) as response:
+              package_data = json.load(response)
+          print(package_data["info"]["version"])
+          PY
+          )"
+          NEW_VERSION="$(python scripts/bump_version.py --base-version "$CURRENT_VERSION")"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "PyPI 当前版本：$CURRENT_VERSION；本次发布版本：$NEW_VERSION"
+
+      - name: 运行版本规则测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 构建并检查发行包
+        run: |
+          python -m build
+          python -m twine check dist/*
+
+      - name: 提交版本号并创建标签
+        shell: bash
         env:
-          BUILD_PACKAGE: ${{ matrix.package }}
-        run: python -m build
-      - name: Publish package
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 发布失败后重跑时，版本提交和标签可能已经存在，因此所有操作都保持幂等。
+          if ! git diff --quiet -- setup.py; then
+            git add setup.py
+            git commit -m "build: 发布版本 ${NEW_VERSION} [skip ci]"
+          fi
+
+          if ! git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
+            git tag -a "v${NEW_VERSION}" -m "发布版本 ${NEW_VERSION}"
+          fi
+
+          git push origin HEAD:main --follow-tags
+
+      - name: 发布发行包到 PyPI
         uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
-      - name: Dump GitHub context
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"

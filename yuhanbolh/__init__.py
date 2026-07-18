@@ -146,6 +146,13 @@ from .process_data import (
     process_scheduled_tasks
 )
 
+
+# 获取akshare修改函数数据
+from .edit_akshare import (
+    stock_zh_a_spot_em,
+    bond_cov_comparison
+)
+
 # qmt的委托、交易和推送文件
 from .qmt_trade import (
     MyXtQuantTraderCallback, 
@@ -318,6 +325,10 @@ __all__ = [
     "save_positions",
     "save_stock_asset",
     "sort_and_update_table",
+    
+    # 获取akshare修改函数数据
+    "stock_zh_a_spot_em",
+    "bond_cov_comparison",
     
     # 邮件发送
     "send_email"

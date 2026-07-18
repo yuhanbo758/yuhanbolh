@@ -34,3 +34,26 @@ baostock
 pytdx
 MetaTrader5
 yuhanbolh
+
+## 安装
+
+```powershell
+pip install --upgrade yuhanbolh
+```
+
+## 自动发布到 PyPI
+
+仓库的 `.github/workflows/publish.yml` 会在代码推送到 `main` 后自动完成以下操作：
+
+1. 查询 PyPI 上 `yuhanbolh` 的当前版本。
+2. 按每位逢十进一的规则生成下一版本，例如 `0.6.8 → 0.6.9 → 0.7.0`。
+3. 构建并校验 wheel 和源码发行包。
+4. 自动提交 `setup.py` 中的新版本、创建 `v版本号` 标签并发布到 PyPI。
+
+首次使用前，需要在 GitHub 仓库中完成一次配置：
+
+1. 打开 `Settings → Secrets and variables → Actions`，新增仓库 Secret：`PYPI_API_TOKEN`。
+2. Secret 的值填写从 PyPI `Account settings → API tokens` 创建的 API Token（建议限定到 `yuhanbolh` 项目）。
+3. 打开 `Settings → Actions → General → Workflow permissions`，选择 `Read and write permissions`。
+
+自动生成的版本提交带有 `[skip ci]`，不会递归触发下一次发布。
