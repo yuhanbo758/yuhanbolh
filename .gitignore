@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Local AI collaboration context (never commit)
+/AGENTS.md
+/PROJECT_MEMORY.md
+
 # C extensions
 *.so
 

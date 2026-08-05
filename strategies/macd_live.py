@@ -1,1 +1,0 @@
-def macd_strategy():\n    print('Live MACD Strategy')

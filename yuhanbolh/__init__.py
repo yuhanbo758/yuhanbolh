@@ -1,177 +1,186 @@
-# 策略文件
-from .create_strategy import (
-    get_filtered_data,
-    process_and_merge_data,
-    mole_hunting_delegation,
-    place_order_based_on_asset
-)
+"""yuhanbolh 的公共 API。
 
-# 获取金融数据文件
-from .get_data import (
-    get_tdx_market_address,
-    get_financial_data,
-    index_value_name_funddb,
-    get_security_quotes,
-    get_security_bars,
-    get_security_count,
-    get_index_bars,
-    get_history_minute_time_data,
-    get_transaction_data,
-    get_finance_info,
-    json_to_dfcf,
-    json_to_dfcf_qmt,
-    json_to_dfcf_qmt_jyr,
-    query_stock_data,
-    qmt_data_source,
-    download_7_years_data,
-    qmt_data_source_download,
-    akshare_index_analysis,
-    get_pywencai,
-    akshare_convertible_bond,
-    get_satisfy_redemption,
-    wencai_conditional_query,
-    get_clean_data,
-    filter_bond_cb_redeem_data_and_save_to_db,
-    get_valuation_ratios,
-    calculate_unhedged_transactions,
-    position_close_process_data,
-    get_exchange_rate,
-    save_exchange_rates_to_db,
-    get_snapshot,
-    stock_info_global_em
-)
+公共对象在首次访问时才加载。这样，使用技术指标或数据库工具的用户不需要
+预先安装只能随 QMT/MT5 终端提供的平台依赖，同时保持原有根级导入方式。
+"""
 
-# 全局函数
-from .global_functions import (
-    list_dir_contents,
-    create_account_database,
-    check_account,
-    add_account,
-    copy_table_to_mysql,
-    calculate_unhedged_transactions,
-    calculate_unhedged_transactions_sbb,
-    open_positions,
-    calculate_stop_profit_loss,
-    generate_mole_strategy,
-    copy_tables,
-    sync_folders,
-    save_to_database,
-    get_decimal_places,
-    get_existing_data,
-    process_data,
-    list_dir_recursive,
-    search_files
-)
+from importlib import import_module
 
-# MT5自定义函数
-from .mt5_ic_custom import (
-    wencai_conditional_query_nz100,
-    save_exchange_rates_to_db,
-    get_all_valuation_ratios_db,
-    get_mt5_data,
-    get_mt5_data_with_days,
-    get_stock_list_from_db,
-    MA_zb,
-    EMA_zb,
-    ichimoku_cloud_zb,
-    VWMA_zb,
-    HullMA_zb,
-    RSI_zb,
-    STOK_zb,
-    CCI_zb,
-    ADX_zb,
-    AO_zb,
-    MTM_zb,
-    MACD_Level_zb,
-    Stoch_RSI_zb,
-    WPR_zb,
-    BBP_zb,
-    UO_zb,
-    linear_regression_dfcf_zb,
-    generate_stat_data_zb,
-    ex_fund_valuation,
-    ex_fund_forex_valuation,
-    calculate_totals
-)
+_MODULE_EXPORTS = {
+    "create_strategy": {
+        "get_filtered_data",
+        "mole_hunting_delegation",
+        "process_and_merge_data",
+    },
+    "edit_akshare": {"bond_cov_comparison", "stock_zh_a_spot_em"},
+    "get_data": {
+        "akshare_convertible_bond",
+        "akshare_index_analysis",
+        "download_7_years_data",
+        "filter_bond_cb_redeem_data_and_save_to_db",
+        "get_clean_data",
+        "get_exchange_rate",
+        "get_finance_info",
+        "get_financial_data",
+        "get_history_minute_time_data",
+        "get_index_bars",
+        "get_pywencai",
+        "get_satisfy_redemption",
+        "get_security_bars",
+        "get_security_count",
+        "get_security_quotes",
+        "get_snapshot",
+        "get_tdx_market_address",
+        "get_transaction_data",
+        "get_valuation_ratios",
+        "index_value_name_funddb",
+        "json_to_dfcf",
+        "json_to_dfcf_qmt",
+        "json_to_dfcf_qmt_jyr",
+        "position_close_process_data",
+        "qmt_data_source",
+        "qmt_data_source_download",
+        "query_stock_data",
+        "stock_info_global_em",
+        "wencai_conditional_query",
+    },
+    "global_functions": {
+        "add_account",
+        "calculate_stop_profit_loss",
+        "calculate_unhedged_transactions",
+        "calculate_unhedged_transactions_sbb",
+        "check_account",
+        "copy_table_to_mysql",
+        "copy_tables",
+        "create_account_database",
+        "generate_mole_strategy",
+        "get_decimal_places",
+        "get_existing_data",
+        "list_dir_contents",
+        "list_dir_recursive",
+        "open_positions",
+        "process_data",
+        "save_to_database",
+        "search_files",
+        "sync_folders",
+    },
+    "mt5_ic_custom": {
+        "ADX_zb",
+        "AO_zb",
+        "BBP_zb",
+        "CCI_zb",
+        "EMA_zb",
+        "HullMA_zb",
+        "MA_zb",
+        "MACD_Level_zb",
+        "MTM_zb",
+        "RSI_zb",
+        "STOK_zb",
+        "Stoch_RSI_zb",
+        "UO_zb",
+        "VWMA_zb",
+        "WPR_zb",
+        "calculate_totals",
+        "ex_fund_forex_valuation",
+        "ex_fund_valuation",
+        "generate_stat_data_zb",
+        "get_all_valuation_ratios_db",
+        "get_mt5_data",
+        "get_mt5_data_with_days",
+        "get_stock_list_from_db",
+        "ichimoku_cloud_zb",
+        "linear_regression_dfcf_zb",
+        "save_exchange_rates_to_db",
+        "wencai_conditional_query_nz100",
+    },
+    "mt5_trade": {
+        "cancel_order_fn",
+        "cancel_pending_order",
+        "close_position_fn",
+        "execute_order_from_db",
+        "export_non_strategy_positions",
+        "export_positions_to_db",
+        "insert_into_db",
+        "limit_order_fn",
+        "market_order_fn",
+        "process_non_strategy_positions",
+        "remove_unavailable_products_mt5",
+        "save_unsettled_orders_to_db",
+    },
+    "process_data": {
+        "ADX",
+        "AO",
+        "BBP",
+        "CCI",
+        "EMA",
+        "HullMA",
+        "MA",
+        "MACD_Level",
+        "MTM",
+        "RSI",
+        "STOK",
+        "Stoch_RSI",
+        "UO",
+        "VWMA",
+        "WPR",
+        "calculate_annual_return",
+        "calculate_xirr",
+        "clean_execute_general_trade",
+        "delete_execute_general_trade_row",
+        "delete_receive_condition_row",
+        "generate_stat_data",
+        "get_processed_code",
+        "ichimoku_cloud",
+        "insert_order",
+        "linear_regression_dfcf",
+        "portfolio_rotation",
+        "process_amplitude_grid",
+        "process_immediate_rows",
+        "process_price_grid",
+        "process_scheduled_tasks",
+        "save_data",
+        "tongda_code_convert",
+    },
+    "qmt_trade": {
+        "MyXtQuantTraderCallback",
+        "calculate_remaining_holdings",
+        "cancel_all_orders",
+        "insert_buy_sell_data",
+        "place_order_based_on_asset",
+        "place_orders",
+        "run_weekdays_at",
+        "save_daily_data",
+        "save_daily_orders",
+        "save_daily_trades",
+        "save_positions",
+        "save_stock_asset",
+        "sort_and_update_table",
+    },
+    "send_email": {"send_email"},
+}
 
-# mt5交易委托文件
-from .mt5_trade import (
-    export_positions_to_db,
-    insert_into_db,
-    save_unsettled_orders_to_db,
-    execute_order_from_db,
-    market_order_fn,
-    limit_order_fn,
-    close_position_fn,
-    cancel_order_fn,
-    cancel_pending_order,
-    remove_unavailable_products_mt5,
-    export_non_strategy_positions,
-    process_non_strategy_positions
-)
-
-# 数据处理文件，主要为技术指标的计算
-from .process_data import (
-    ADX,
-    AO,
-    BBP,
-    calculate_annual_return,
-    calculate_xirr,
-    CCI,
-    EMA,
-    generate_stat_data,
-    HullMA,
-    ichimoku_cloud,
-    linear_regression_dfcf,
-    MA,
-    MACD_Level,
-    MTM,
-    RSI,
-    save_data,
-    Stoch_RSI,
-    STOK,
-    UO,
-    VWMA,
-    WPR,
-    get_processed_code,
-    tongda_code_convert,
-    clean_execute_general_trade,
-    insert_order,
-    delete_receive_condition_row,
-    delete_execute_general_trade_row,
-    process_price_grid,
-    process_amplitude_grid,
-    process_immediate_rows,
-    portfolio_rotation,
-    process_scheduled_tasks
-)
+_EXPORT_MODULE = {
+    export_name: module_name
+    for module_name, export_names in _MODULE_EXPORTS.items()
+    for export_name in export_names
+}
 
 
-# 获取akshare修改函数数据
-from .edit_akshare import (
-    stock_zh_a_spot_em,
-    bond_cov_comparison
-)
+def __getattr__(name):
+    """按需导入公共对象，并缓存到包命名空间。"""
+    module_name = _EXPORT_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-# qmt的委托、交易和推送文件
-from .qmt_trade import (
-    MyXtQuantTraderCallback, 
-    calculate_remaining_holdings,
-    cancel_all_orders,
-    insert_buy_sell_data,
-    place_order_based_on_asset,
-    place_orders,
-    run_weekdays_at,
-    save_daily_data,
-    save_daily_orders,
-    save_daily_trades,
-    save_positions,
-    save_stock_asset,
-    sort_and_update_table
-)
+    value = getattr(import_module(f".{module_name}", __name__), name)
+    globals()[name] = value
+    return value
 
-# 邮件发送文件
-from .send_email import send_email
+
+def __dir__():
+    """让 IDE 和交互式环境能够发现所有延迟加载的公共 API。"""
+    return sorted(set(globals()) | set(__all__))
+
 
 # 定义公共API
 __all__ = [
@@ -180,7 +189,6 @@ __all__ = [
     "process_and_merge_data",
     "mole_hunting_delegation",
     "place_order_based_on_asset",
-    
     # 获取金融数据文件
     "get_tdx_market_address",
     "get_financial_data",
@@ -213,14 +221,12 @@ __all__ = [
     "save_exchange_rates_to_db",
     "get_snapshot",
     "stock_info_global_em",
-    
     # 全局函数
     "list_dir_contents",
     "create_account_database",
     "check_account",
     "add_account",
     "copy_table_to_mysql",
-    "calculate_unhedged_transactions",
     "calculate_unhedged_transactions_sbb",
     "open_positions",
     "calculate_stop_profit_loss",
@@ -233,10 +239,8 @@ __all__ = [
     "process_data",
     "list_dir_recursive",
     "search_files",
-    
     # MT5自定义函数
     "wencai_conditional_query_nz100",
-    "save_exchange_rates_to_db",
     "get_all_valuation_ratios_db",
     "get_mt5_data",
     "get_mt5_data_with_days",
@@ -262,7 +266,6 @@ __all__ = [
     "ex_fund_valuation",
     "ex_fund_forex_valuation",
     "calculate_totals",
-    
     # mt5交易委托文件
     "export_positions_to_db",
     "insert_into_db",
@@ -276,7 +279,6 @@ __all__ = [
     "remove_unavailable_products_mt5",
     "export_non_strategy_positions",
     "process_non_strategy_positions",
-    
     # 数据处理文件
     "ADX",
     "AO",
@@ -310,13 +312,11 @@ __all__ = [
     "process_immediate_rows",
     "portfolio_rotation",
     "process_scheduled_tasks",
-    
     # qmt交易委托文件
     "MyXtQuantTraderCallback",
     "calculate_remaining_holdings",
     "cancel_all_orders",
     "insert_buy_sell_data",
-    "place_order_based_on_asset",
     "place_orders",
     "run_weekdays_at",
     "save_daily_data",
@@ -325,13 +325,9 @@ __all__ = [
     "save_positions",
     "save_stock_asset",
     "sort_and_update_table",
-    
     # 获取akshare修改函数数据
     "stock_zh_a_spot_em",
     "bond_cov_comparison",
-    
     # 邮件发送
-    "send_email"
+    "send_email",
 ]
-
-

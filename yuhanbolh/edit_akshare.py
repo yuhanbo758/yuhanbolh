@@ -1,7 +1,7 @@
+import time
 
 import pandas as pd
 import requests
-import time
 
 
 # 获取东财a股全部股票数据
@@ -13,16 +13,16 @@ def stock_zh_a_spot_em() -> pd.DataFrame:
     :rtype: pandas.DataFrame
     """
     url = "https://82.push2.eastmoney.com/api/qt/clist/get"
-    
+
     # 创建一个空的DataFrame来存储所有数据
     all_data = pd.DataFrame()
     page = 1
-    
+
     while True:
         try:
             params = {
                 "pn": str(page),  # 页码
-                "pz": "1000",     # 每页数据条数
+                "pz": "1000",  # 每页数据条数
                 "po": "1",
                 "np": "1",
                 "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -33,19 +33,19 @@ def stock_zh_a_spot_em() -> pd.DataFrame:
                 "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,"
                 "f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152",
             }
-            
+
             r = requests.get(url, timeout=15, params=params)
             r.raise_for_status()  # 检查请求是否成功
             data_json = r.json()
-            
+
             if not data_json.get("data") or not data_json["data"].get("diff"):
                 print(f"\n已到达数据末尾，共获取{len(all_data)}条数据")
                 break
-                
+
             temp_df = pd.DataFrame(data_json["data"]["diff"])
             if temp_df.empty:
                 break
-                
+
             temp_df.columns = [
                 "_",
                 "最新价",
@@ -79,7 +79,7 @@ def stock_zh_a_spot_em() -> pd.DataFrame:
                 "-",
                 "-",
             ]
-            
+
             temp_df = temp_df[
                 [
                     "代码",
@@ -106,25 +106,25 @@ def stock_zh_a_spot_em() -> pd.DataFrame:
                     "年初至今涨跌幅",
                 ]
             ]
-            
+
             # 数据类型转换
             numeric_columns = temp_df.columns.difference(["代码", "名称"])
             for col in numeric_columns:
                 temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
-                
+
             all_data = pd.concat([all_data, temp_df], ignore_index=True)
             print(f"已获取第{page}页数据，当前共{len(all_data)}条记录")
-            
+
             page += 1
             time.sleep(0.5)  # 添加短暂延时，避免请求过快
-            
+
         except requests.exceptions.RequestException as e:
             print(f"请求发生错误: {e}")
             break
         except Exception as e:
             print(f"处理数据时发生错误: {e}")
             break
-    
+
     if len(all_data) > 0:
         # 添加序号列
         all_data.insert(0, "序号", range(1, len(all_data) + 1))
@@ -132,9 +132,6 @@ def stock_zh_a_spot_em() -> pd.DataFrame:
     else:
         print("未获取到任何数据")
         return pd.DataFrame()
-
-
-
 
 
 # 获取东财可转债比价表
@@ -146,16 +143,16 @@ def bond_cov_comparison() -> pd.DataFrame:
     :rtype: pandas.DataFrame
     """
     url = "https://16.push2.eastmoney.com/api/qt/clist/get"
-    
+
     # 创建一个空的DataFrame来存储所有数据
     all_data = pd.DataFrame()
     page = 1
-    
+
     while True:
         try:
             params = {
                 "pn": str(page),  # 页码
-                "pz": "1000",     # 每页数据条数
+                "pz": "1000",  # 每页数据条数
                 "po": "1",
                 "np": "1",
                 "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -167,15 +164,15 @@ def bond_cov_comparison() -> pd.DataFrame:
                 "f235,f236,f237,f238,f239,f240,f241,f242,f26,f243",
                 "_": "1590386857527",
             }
-            
+
             r = requests.get(url, timeout=15, params=params)
             r.raise_for_status()  # 检查请求是否成功
             json_data = r.json()
-            
+
             if not json_data.get("data") or not json_data["data"].get("diff"):
                 print(f"\n已到达数据末尾，共获取{len(all_data)}条数据")
                 break
-                
+
             temp_df = pd.DataFrame(json_data["data"]["diff"])
             if temp_df.empty:
                 break
@@ -209,7 +206,7 @@ def bond_cov_comparison() -> pd.DataFrame:
                 "开始转股日",
                 "申购日期",
             ]
-            
+
             temp_df = temp_df[
                 [
                     "序号",
@@ -234,25 +231,35 @@ def bond_cov_comparison() -> pd.DataFrame:
                     "申购日期",
                 ]
             ]
-            
+
             # 数据类型转换
-            numeric_columns = temp_df.columns.difference(["转债代码", "转债名称", "正股代码", "正股名称", "开始转股日", "上市日期", "申购日期"])
+            numeric_columns = temp_df.columns.difference(
+                [
+                    "转债代码",
+                    "转债名称",
+                    "正股代码",
+                    "正股名称",
+                    "开始转股日",
+                    "上市日期",
+                    "申购日期",
+                ]
+            )
             for col in numeric_columns:
                 temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
-                
+
             all_data = pd.concat([all_data, temp_df], ignore_index=True)
             print(f"已获取第{page}页数据，当前共{len(all_data)}条记录")
-            
+
             page += 1
             time.sleep(0.5)  # 添加短暂延时，避免请求过快
-            
+
         except requests.exceptions.RequestException as e:
             print(f"请求发生错误: {e}")
             break
         except Exception as e:
             print(f"处理数据时发生错误: {e}")
             break
-    
+
     if len(all_data) > 0:
         # 重新设置序号列
         all_data["序号"] = range(1, len(all_data) + 1)

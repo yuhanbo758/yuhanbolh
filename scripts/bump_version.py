@@ -11,7 +11,6 @@ import argparse
 import re
 from pathlib import Path
 
-
 # 只匹配 setup() 中的标准三段式版本，避免意外修改其他数字或依赖版本。
 VERSION_PATTERN = re.compile(
     r"(?P<prefix>\bversion\s*=\s*['\"])(?P<version>\d+\.\d+\.\d+)(?P<suffix>['\"])",
@@ -59,9 +58,7 @@ def write_version(setup_file: Path, version: str) -> None:
         content,
     )
     if count != 1:
-        raise RuntimeError(
-            f"{setup_file} 中应当恰好更新一个版本字段，实际更新 {count} 个。"
-        )
+        raise RuntimeError(f"{setup_file} 中应当恰好更新一个版本字段，实际更新 {count} 个。")
     setup_file.write_text(updated, encoding="utf-8")
 
 
@@ -98,4 +95,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
