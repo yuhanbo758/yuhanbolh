@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 # 直接从脚本路径加载模块，避免把发布辅助脚本打进 yuhanbolh 安装包。
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bump_version.py"
 SPEC = importlib.util.spec_from_file_location("bump_version", SCRIPT_PATH)
@@ -52,4 +51,3 @@ class SetupFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

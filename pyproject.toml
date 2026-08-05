@@ -3,3 +3,12 @@
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.ruff]
+# 项目最低支持 Python 3.9；格式和静态检查使用统一行宽。
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+# E/F 捕获语法与未定义名称，I 统一导入，B 检查高风险逻辑问题，
+# UP 提醒已淘汰的 Python 写法；暂不强制历史代码一次性满足全部风格规则。
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

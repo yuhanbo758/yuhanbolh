@@ -38,8 +38,24 @@ yuhanbolh
 ## 安装
 
 ```powershell
-pip install --upgrade yuhanbolh
+python -m pip install --upgrade yuhanbolh
 ```
+
+项目不再锁死 NumPy 与 pandas 的补丁版本，当前兼容范围为
+`numpy>=1.26.4`、`pandas>=2.2.2`，并通过 NumPy 2.x 与 pandas 3.x
+回归测试。需要在 Jupyter 中使用时，可安装 Notebook 可选依赖：
+
+```powershell
+python -m pip install --upgrade "yuhanbolh[notebook]"
+```
+
+`ipykernel 7` 与 Spyder 自带的 `spyder-kernels 2.x/3.x` 当前存在上游约束冲突
+（后者要求 `ipykernel<7`）。请把最新版 Jupyter 内核放在独立虚拟环境中；若必须
+使用 Spyder 控制台，则应遵循 Spyder 的环境要求保留 `ipykernel 6.x`。这不是
+`yuhanbolh` 的运行依赖冲突。
+
+QMT 的 `xtquant` 仍需按迅投官方方式安装。包入口已改为按需加载，因此只使用
+技术指标、SQLite 等功能时，不会因为缺少 `xtquant` 而无法导入 `yuhanbolh`。
 
 ## 自动发布到 PyPI
 
