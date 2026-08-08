@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 
@@ -45,6 +46,31 @@ class PandasCompatibilityTests(unittest.TestCase):
             },
             index=pd.date_range("2026-01-01", periods=40, freq="D"),
         )
+
+    def test_pandas_import_has_no_accelerator_version_warning(self) -> None:
+        """确保旧版 pandas 加速依赖不会在全新进程导入时产生兼容警告。"""
+
+        # pandas 在当前测试模块导入时已经初始化，因此使用子进程模拟用户首次
+        # `import pandas`。只把 numexpr/Bottleneck 版本警告升级为异常，避免
+        # 第三方库的无关 UserWarning 干扰这项依赖边界测试。
+        check_code = """
+import warnings
+
+warnings.filterwarnings(
+    "error",
+    message=r"Pandas requires version .* of '(numexpr|bottleneck)'",
+    category=UserWarning,
+)
+import pandas
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", check_code],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_adx_preserves_datetime_index(self) -> None:
         from yuhanbolh import ADX

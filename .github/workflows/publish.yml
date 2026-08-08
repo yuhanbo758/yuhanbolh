@@ -48,8 +48,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade build twine
           # Linux 发布环境不安装包含 Windows 专用 MetaTrader5 的完整运行时依赖；
-          # 此处显式安装单元测试实际使用的科学计算、Notebook 与网络依赖。
-          python -m pip install --upgrade "numpy>=1.26.4" "pandas>=2.2.2" "scipy>=1.12.0" "ipykernel>=7.0.0" "requests>=2.31.0" "beautifulsoup4>=4.12.0"
+          # 此处显式安装单元测试实际使用的科学计算、pandas 加速、Notebook 与网络依赖。
+          python -m pip install --upgrade "numpy>=1.26.4" "pandas>=2.2.2" "numexpr>=2.10.2" "bottleneck>=1.4.2" "scipy>=1.12.0" "ipykernel>=7.0.0" "requests>=2.31.0" "beautifulsoup4>=4.12.0"
 
       - name: 获取 PyPI 当前版本并生成下一版本
         id: version
