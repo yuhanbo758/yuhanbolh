@@ -6,7 +6,7 @@ PROJECT_ROOT = Path(__file__).parent
 
 setup(
     name="yuhanbolh",
-    version="0.6.3",
+    version="0.6.4",
     packages=find_packages(),
     description="量化投资，数据获取和处理",
     long_description=(PROJECT_ROOT / "README.md").read_text(encoding="utf-8"),
