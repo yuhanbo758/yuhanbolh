@@ -22,7 +22,11 @@ setup(
         "MetaTrader5>=5.0.45",
         # 仅声明已验证的最低版本，不锁死补丁版本；这样 pip 可以安装
         # NumPy 2.x、pandas 3.x 以及后续兼容版本，避免与用户环境冲突。
+        # numexpr 与 Bottleneck 是 pandas 的可选加速依赖；显式声明 pandas 3
+        # 要求的最低版本，避免旧 Anaconda 环境残留版本在导入时产生警告。
+        "bottleneck>=1.4.2",
         "numpy>=1.26.4",
+        "numexpr>=2.10.2",
         "pandas>=2.2.2",
         "pymysql>=1.1.0",
         "pytdx>=1.72",

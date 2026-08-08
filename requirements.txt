@@ -1,8 +1,10 @@
 akshare>=1.12.10
 baostock>=0.7.5
 beautifulsoup4>=4.12.0
+bottleneck>=1.4.2
 MetaTrader5>=5.0.45
 numpy>=1.26.4
+numexpr>=2.10.2
 pandas>=2.2.2
 pymysql>=1.1.0
 pytdx>=1.72
