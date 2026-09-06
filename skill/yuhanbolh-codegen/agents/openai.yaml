@@ -1,0 +1,4 @@
+interface:
+  display_name: "yuhanbolh 代码生成"
+  short_description: "基于真实公开接口生成行情、技术指标、数据库与 QMT/MT5 调用代码"
+  default_prompt: "使用 $yuhanbolh-codegen 根据我的需求生成可运行的 Python 代码，并核对接口和副作用。"

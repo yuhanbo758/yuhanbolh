@@ -1,29 +1,12 @@
 
 股票量化代码，包括通过qmt、同花顺问题和东财api等获取金融数据，以及处理量化这些数据。
 
-查看库中的函数文档，请前往：https://wd.sanrenjz.com/yuhanbolh/about
+查看库中的函数文档，请前往：[yuhanbolh 在线文档](https://docs.sanrenjz.com/yuhanbolh/about)
+
+GitHub 文档下载地址：[article-code/docs/yuhanbolh](https://github.com/yuhanbo758/article-code/tree/main/docs/yuhanbolh)
 
 代码是从多个渠道获取金融数据，在运行过程中提示没有什么模块，就用pip安装什么模块。
 但迅投的xtdata和xttrade是不能通过pip安装的，需要把官网http://dict.thinktrader.net/nativeApi/download_xtquant.html 下载，然后放到python的...\Lib\site-packages路径中。
-
-# 需要证券开户开QMT的可以联系我，微信：yuhanbo758
-
-
-# 联系我们
-
-主站：[三人聚智-余汉波 - QMT量化、效率工具和财经知识的搬运工](https://www.sanrenjz.com/)
-
-程序小店（个人开发的所有程序，包括开源和不开源）：[首页 | 三人聚智-余汉波程序小店](https://jy.sanrenjz.com/)
-
-文档站点（财经、代码和库文档等）：[余汉波 文档 | 财经、python与效率工具的知识搬运工](https://wd.sanrenjz.com/)
-
-python 程序管理工具下载：[sanrenjz - 三人聚智-余汉波](https://www.sanrenjz.com/sanrenjz/)
-
-![三码合一](https://gdsx.sanrenjz.com/image/sanrenjz_yuhanbolh_yuhanbo758.png?imageSlim&t=1ab9b82c-e220-8022-beff-e265a194292a)
-
-![余汉波打赏码](https://gdsx.sanrenjz.com/PicGo/%E6%89%93%E8%B5%8F%E7%A0%81500.png)
-
-
 
 schedule
 akshare
@@ -93,3 +76,71 @@ client = lh.BridgeClient()  # 构造不联网；业务调用前自动校验服�
 
 迁移、异常行为、数据库参数及文档变更见 [本次迁移说明](docs/migration-openapi-bridge.md)。
 桥接订单默认 `dry_run=True`，模板账户及真实报单默认关闭；不包含撤单、条件单或算法单。
+
+## AI 代码生成 Skill
+
+仓库新增了可下载的 [`yuhanbolh-codegen`](skill/README.md) Skill，供 Codex 等支持
+`SKILL.md` 的 AI 工具根据真实公开 API 生成、修改和排查 `yuhanbolh` 调用代码。
+它覆盖行情与问财选股、可转债、技术指标、SQLite 数据处理、标准大QMT桥接以及
+xtquant/MT5 辅助程序，并会提示凭据、数据库写入和真实交易等副作用边界。
+
+### 下载与安装
+
+1. 下载 [`yuhanbolh-codegen.zip`](skill/yuhanbolh-codegen.zip)，并可使用
+   [`SHA-256 校验文件`](skill/yuhanbolh-codegen.zip.sha256) 验证完整性。
+2. 解压后保留完整的 `yuhanbolh-codegen` 文件夹，确保其根目录直接包含
+   `SKILL.md`、`references/`、`scripts/` 和 `agents/`。
+3. Codex 用户将该文件夹复制到 `$CODEX_HOME/skills/`；未设置 `CODEX_HOME` 时，
+   使用用户目录下的 `.codex/skills/`。复制后开启新会话确认 Skill 已被发现。
+
+调用示例：
+
+```text
+使用 $yuhanbolh-codegen，读取本地 CSV 的日线数据，调用 MA 和 RSI，按日期对齐结果并保存到新的 CSV，添加中文注释。
+```
+
+Skill 的 API 参考基线为 `yuhanbolh 0.6.5`。实际生成代码前应优先核对目标机器的
+已安装版本；Skill 不会自动安装依赖、配置账户、写入业务数据库或执行真实交易。
+完整安装说明、文件结构和更多调用示例见 [Skill 使用说明](skill/README.md)。
+
+## 👨‍💻 作者信息
+
+**余汉波** - 编程爱好者-量化交易和效率工具开发
+
+- **GitHub**: [@yuhanbo758](https://github.com/yuhanbo758)
+
+- **Email**: yuhanbo@sanrenjz.com
+
+- **Website**: [三人聚智](https://www.sanrenjz.com)
+
+## 🌐 相关链接
+
+- 🏠 [项目主页](https://www.sanrenjz.com)
+
+- 📚 [在线文档](https://docs.sanrenjz.com/yuhanbolh/about)（yuhanbolh 函数及使用文档）
+
+- 📥 [GitHub 文档下载](https://github.com/yuhanbo758/article-code/tree/main/docs/yuhanbolh)
+
+- 🛒 [插件商店](https://shop.sanrenjz.com)（个人开发的所有程序，包括开源和不开源）
+
+
+## 联系我们
+
+[联系我们 - 三人聚智-余汉波](https://www.sanrenjz.com/contact_us/)
+
+python 程序管理工具下载：[sanrenjz - 三人聚智-余汉波](https://www.sanrenjz.com/sanrenjz/)
+
+效率工具程序管理下载：[sanrenjz-tools - 三人聚智-余汉波](https://www.sanrenjz.com/sanrenjz-tools/)
+
+智能codebot下载：[sanrenjz-codebot - 三人聚智-余汉波](https://www.sanrenjz.com/sanrenjz-codebot/)
+
+![三码合一](https://gdsx.sanrenjz.com/image/sanrenjz_yuhanbolh_yuhanbo758.png?imageSlim&t=1ab9b82c-e220-8022-beff-e265a194292a)
+
+![余汉波打赏码](https://gdsx.sanrenjz.com/image/%E6%89%93%E8%B5%8F%E7%A0%81%E5%90%88%E4%B8%80.png?imageSlim)
+
+## 🙏 致谢
+
+感谢所有为本项目贡献代码和想法的开发者们！
+
+---
+**⭐ 如果这个项目对您有帮助，请给它一个 Star！**
