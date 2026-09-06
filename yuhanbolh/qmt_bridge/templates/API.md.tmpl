@@ -1,0 +1,64 @@
+> yuhanbolh 导出说明：qmt_bridge_server.py 已转换为 GBK，可作为大QMT部署副本；其余文件为 UTF-8。修改服务端请保持 GBK。此包不附任何实际运行验收报告。
+
+# API v1
+
+默认根地址 `http://127.0.0.1:1693`。令牌请求头为 `X-QMT-Bridge-Token`；JSON请求使用UTF-8。成功响应一般为 `{"status":"success","data":...}`，错误为 `{"status":"error","message":"..."}`，同时检查HTTP状态。客户端保留成功信封；业务HTTP错误仅提取message并替换访问令牌，不回显完整远端响应；服务端输出前也会隐藏配置中的账号与路径。
+
+原生接口核对依据：[交易与QMT函数](https://dict.thinktrader.net/innerApi/trading_function.html)、[行情函数](https://dict.thinktrader.net/innerApi/data_function.html)、[回调函数](https://dict.thinktrader.net/innerApi/callback_function.html)、[数据结构](https://dict.thinktrader.net/innerApi/data_structure.html)、[枚举](https://dict.thinktrader.net/innerApi/enum_constants.html)。本次使用本地保存的官方文档及原项目实际调用核对，未以网络行情替代ContextInfo。
+
+## 健康检查
+
+`GET /health`：字段在顶层，包括 `status`、`product="qmt_bridge_standard"`、`api_version=1`、`runtime_ready`、`capabilities`。约定能力为 `market_data`、`account_query`、`direct_order`、`trade_ledger`、`events_long_poll`、`events_sse`。能力存在不代表账户或真实交易权限已开启。
+
+standard.2新增 `timer_registered`、`timer_count`、`last_timer_at`、`last_callback_at`、`rpc_queue_size`、`rpc_ready`。`runtime_ready`仅表示模型已初始化；`rpc_ready`要求已经收到真实定时回调且最近回调未超过10秒。历史handlebar不会增加timer_count。客户端发现rpc_ready=false时立即拒绝原生行情、账户及报单请求，避免等待60秒；事件诊断仍可使用。旧版本缺少该字段不能证明定时器正常。
+
+## 行情与账户
+
+| 请求 | 查询参数 | data |
+| --- | --- | --- |
+| GET /tick | stock_code | 原始Tick字典 |
+| GET /market | stock_code | 原始Tick字典 |
+| GET /history_data | stock_code；period=1d；count=60；fields逗号分隔；start_time/end_time；dividend_type=none；fill_data=false；subscribe=false | 行记录列表；元数据位于顶层 |
+| GET /assets | account_type=normal/credit/all | 资产列表 |
+| GET /positions | account_type=normal/credit/all | 持仓列表 |
+| GET /orders | account_type=normal/credit/all；可选request_id | 不传request_id查询柜台委托；传入时只读查询持久化请求，source=persistent_request |
+| GET /trades | account_type=normal/credit/all | 成交查询列表 |
+| GET /trade/ledger | request_id；account_type=normal/credit/all | 已落账成交列表 |
+
+账户别名不包含真实资金账号；`all` 用于聚合查询，不是订单账户。历史缺失不能由客户端静默填充；应保留顶层元数据用于核对返回区间和覆盖情况。
+
+## 直接订单
+
+`POST /trade/order` JSON字段：
+
+| 字段 | 约束 |
+| --- | --- |
+| stock_code | 证券代码及市场后缀 |
+| account_type | normal或credit |
+| action | BUY或SELL |
+| price / volume | 有限正价格、正整数数量；原样指定价指定量传入柜台，不自动取整/拆单；调用方须核对资产资格、最小单位、资金和可卖量 |
+| op_type | 信用账户必填；按原生接口核对，不推测枚举 |
+| strategy_name | 默认http_bridge；非空，GBK编码不超过20字节 |
+| user_order_id | 必填稳定请求号，由调用者保存 |
+| dry_run | 布尔值，默认true |
+| confirm_live_order | dry_run=false时必须为LIVE_ORDER |
+
+响应data的提交内容不能解释为成交。客户端不自动重试POST，不自动产生新请求号，不提供中转委托入口。
+
+服务端使用原生 `orderType=1101`、`prType=11`、`quickTrade=2`。普通账户操作码23买入、24卖出；信用账户27融资买入、28融券卖出、29买券还券、31卖券还款、33担保品买入、34担保品卖出。其他操作拒绝。本版执行门禁为账户、开关、确认值、参数及原生交易日历确认的连续竞价时段（09:30–11:30、13:00–14:57，不含区间结束）；不实现资金分桶、资格查询或资产规则引擎，柜台可拒绝不合规订单。
+
+响应data含 `request_id`、`submission_state`、`submission_result`、`duplicate_request`、`order_id`、`order_status`、`remaining`。`submission_state` 为 `dry_run`、`submitting`、`passorder_called`、`rejected` 或 `unknown`。顶层success表示请求已处理，仍须检查上述状态。`order_status` 是原生委托状态；`remaining` 只随成交落库减少，撤单后不代表仍有活动委托。同请求号不同参数拒绝；同账户、策略、证券、方向存在未确认终态请求时，换号也会拒绝。
+
+`GET /orders?request_id=...` 不触发报单、不要求真实报单开关；即使柜台暂无委托或交易时段已结束也可查看已持久化请求。无匹配返回空列表，不能据此证明其他实例未提交。`strategy_name` 为通用标识，柜台投资备注由服务端生成20字节的 `qb` 前缀唯一标识，不接受 `order_remark`；与外部请求号的映射保存在独立库。
+
+历史count范围1–10000，subscribe只能为false；不主动下载历史。start_time/end_time使用YYYYMMDD或YYYYMMDDHHMMSS，fill_data默认false。缺失Tick返回data=null，缺失历史返回空列表，不伪造数据。
+
+## 长轮询与SSE
+
+`GET /events` 参数：`after_id`、`event_types`（逗号分隔）、`timeout`（秒）、`stream_id`。响应data为事件列表，每条包含 `event_id`、`event_type`、`data`、`stream_id`；顶层包含 `history_truncated` 布尔值、`stream_id`、`next_event_id`。
+
+`GET /events/stream` 使用同类游标与过滤参数，以 `max_seconds` 和 `heartbeat` 控制连接时长和心跳。SSE data为上述单条事件载荷，并可能发送 `bridge_gap` 缺口通知；心跳不构成业务事件。客户端解析多行data，返回 `{"event":...,"id":...,"data":...}`；保留缺口帧、忽略注释心跳、不自动重连。
+
+事件类型：`account_status`、`position_change`、`stock_order`、`stock_trade`、`order_error`、`reconciliation`（定时查询恢复摘要或错误）。另有SSE元信息帧 `bridge_cursor`，data包含stream_id和next_event_id，成功处理此前帧后再保存此游标。长轮询timeout为0–30秒，SSE max_seconds为0.1–300秒，heartbeat为0.1–30秒；Last-Event-ID可作为未填写after_id时的备用游标。
+
+恢复订阅时带上成功消费后保存的游标及对应 `stream_id`；过滤长轮询使用顶层 `next_event_id` 前进。出现历史截断或实例变化时先处理缺口，再恢复消费，详见交易与回推说明。

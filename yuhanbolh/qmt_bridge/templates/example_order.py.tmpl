@@ -1,0 +1,39 @@
+# -*- coding: utf-8 -*-
+"""默认预演；真实订单需两个显式参数及服务端许可。"""
+import argparse
+import json
+from bridge_client import BridgeClient, DEFAULT_BASE_URL
+
+
+def main():
+    parser = argparse.ArgumentParser(description="直接订单示例（默认dry-run）")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--stock-code", required=True)
+    parser.add_argument("--account-type", choices=["normal", "credit"], required=True)
+    parser.add_argument("--action", choices=["BUY", "SELL"], required=True)
+    parser.add_argument("--price", type=float, required=True)
+    parser.add_argument("--volume", type=int, required=True)
+    parser.add_argument("--user-order-id", required=True)
+    parser.add_argument("--strategy-name", default="http_bridge")
+    parser.add_argument("--op-type", type=int)
+    parser.add_argument("--live-order", action="store_true")
+    parser.add_argument("--confirm-live-order", choices=["LIVE_ORDER"])
+    args = parser.parse_args()
+    # 不允许半套确认参数，防止操作者误判预演与真实模式。
+    if args.live_order != (args.confirm_live_order == "LIVE_ORDER"):
+        parser.error("真实下单必须同时提供--live-order及--confirm-live-order LIVE_ORDER")
+    if args.account_type == "credit" and args.op_type is None:
+        parser.error("信用账户必须提供已核对的--op-type")
+    client = BridgeClient(args.base_url)
+    client.health(["direct_order"])
+    result = client.order(args.stock_code, args.account_type, args.action,
+                          args.price, args.volume, args.user_order_id,
+                          strategy_name=args.strategy_name, op_type=args.op_type,
+                          dry_run=not args.live_order,
+                          confirm_live_order=args.confirm_live_order)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("预演完成" if not args.live_order else "请继续核对委托、成交回推和成交账本；提交不等于成交")
+
+
+if __name__ == "__main__":
+    main()

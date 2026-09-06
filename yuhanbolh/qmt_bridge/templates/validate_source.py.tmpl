@@ -1,0 +1,130 @@
+# -*- coding: utf-8 -*-
+"""仅编译源码，不导入被检模块、不启动服务、不访问数据库或交易接口。"""
+import argparse
+import ast
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+
+SERVER_NAME = "qmt_bridge_server.py"
+
+
+def normalize_declaration(source):
+    """工作区UTF-8文本在内存统一编码声明，原文件保持不变。"""
+    lines = source.splitlines(True)
+    for index in range(min(2, len(lines))):
+        if lines[index].lstrip().startswith("#"):
+            lines[index] = re.sub(r"coding[:=]\s*[-\w.]+", "coding: utf-8", lines[index])
+    return "".join(lines)
+
+
+def check_source(root):
+    """报告仅含相对文件名、哈希和行号，不含机器路径或源码内容。"""
+    root = os.path.abspath(root)
+    grammar_mode = "unavailable"
+    feature = None
+    # 新解释器使用3.6语法模式；旧解释器没有此参数时明确记录限制。
+    for candidate in ((3, 6), 6):
+        try:
+            ast.parse("pass", feature_version=candidate)
+            feature = candidate
+            grammar_mode = "ast_feature_version_3_6"
+            break
+        except (TypeError, ValueError, AssertionError):
+            pass
+    if sys.version_info[:2] == (3, 6):
+        grammar_mode = "native_python_3_6_compile"
+    entries = []
+    server_bytes = None
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = sorted(name for name in dirs if name != "__pycache__")
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            entry = {"file": relative, "passed": False}
+            try:
+                with open(path, "rb") as handle:
+                    raw = handle.read()
+                entry["sha256"] = hashlib.sha256(raw).hexdigest()
+                try:
+                    source = raw.decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    if relative != SERVER_NAME:
+                        raise
+                    source = raw.decode("gbk")
+                normalized = normalize_declaration(source)
+                compile(normalized, relative, "exec", dont_inherit=True)
+                if feature is not None:
+                    ast.parse(normalized, filename=relative, feature_version=feature)
+                if relative == SERVER_NAME:
+                    # 只有指定服务端要求GBK声明及部署字节往返。
+                    first = source.splitlines()[0] if source else ""
+                    if not re.search(r"coding[:=]\s*gbk\b", first, re.I):
+                        raise ValueError("missing_gbk_declaration")
+                    converted = source.encode("gbk")
+                    if converted.decode("gbk") != source:
+                        raise ValueError("gbk_roundtrip_failed")
+                    entry["gbk_roundtrip"] = True
+                    entry["gbk_sha256"] = hashlib.sha256(converted).hexdigest()
+                    # 按实际GBK字节再编译，仍不执行任何代码。
+                    compile(converted, relative, "exec", dont_inherit=True)
+                    server_bytes = converted
+                entry["passed"] = True
+            except (OSError, UnicodeError, SyntaxError, ValueError) as exc:
+                entry["error_type"] = type(exc).__name__
+                if isinstance(exc, SyntaxError):
+                    entry["line"] = exc.lineno
+                # 不记录str(exc)，避免绝对路径或业务源代码进入分享报告。
+            entries.append(entry)
+    has_server = any(item["file"] == SERVER_NAME for item in entries)
+    report = {"generated_utc": datetime.now(timezone.utc).isoformat(),
+              "python_version": "%d.%d.%d" % sys.version_info[:3],
+              "grammar_check": grammar_mode,
+              "native_python36": sys.version_info[:2] == (3, 6),
+              "server_present": has_server,
+              "passed": bool(entries) and has_server and
+                        all(item["passed"] for item in entries) and
+                        grammar_mode != "unavailable",
+              "files": entries}
+    return report, server_bytes
+
+
+def main():
+    parser = argparse.ArgumentParser(description="静态编译及GBK往返检查，不执行服务")
+    parser.add_argument("--source-dir", default=os.path.dirname(os.path.abspath(__file__)))
+    parser.add_argument("--report-dir", help="报告输出目录；默认源码目录")
+    parser.add_argument("--deploy-output", help="显式生成GBK服务端副本；目标文件必须不存在")
+    args = parser.parse_args()
+    report, server_bytes = check_source(args.source_dir)
+    if args.deploy_output:
+        report["deployment_copy"] = "not_written"
+        if report["passed"] and server_bytes is not None:
+            try:
+                # xb原子拒绝已存在文件；不覆盖源码或已有部署副本。
+                with open(args.deploy_output, "xb") as handle:
+                    handle.write(server_bytes)
+                report["deployment_copy"] = "written"
+            except OSError as exc:
+                report["passed"] = False
+                report["deployment_copy"] = "failed"
+                report["deployment_error_type"] = type(exc).__name__
+    output_dir = args.report_dir or args.source_dir
+    filename = "validation_py%d%d.json" % sys.version_info[:2]
+    try:
+        with open(os.path.join(output_dir, filename), "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except OSError:
+        print("校验报告写入失败")
+        return 1
+    print("%s：%s；仅静态校验" % (filename, "通过" if report["passed"] else "未通过"))
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

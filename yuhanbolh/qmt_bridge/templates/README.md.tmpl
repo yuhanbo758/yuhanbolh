@@ -1,0 +1,40 @@
+> yuhanbolh 导出说明：qmt_bridge_server.py 已转换为 GBK，可作为大QMT部署副本；其余文件为 UTF-8。修改服务端请保持 GBK。此包不附任何实际运行验收报告。
+
+# 通用大QMT HTTP桥接
+
+独立协议产品 `qmt_bridge_standard`，`api_version=1`。服务端为单文件 `qmt_bridge_server.py`，在大QMT内部运行；外部客户端和示例只依赖Python 3.6标准库。默认地址为 `http://127.0.0.1:1693`，不自动切换端口。
+
+| 文件 | 用途 |
+| --- | --- |
+| qmt_bridge_server.py | 大QMT单文件服务端，行情/账户/RPC/直接报单/回调/账本 |
+| bridge_client.py | JSON、长轮询和SSE客户端，无POST自动重试 |
+| example_data.py | 只读Tick与历史日线 |
+| example_order.py | 默认dry-run的直接订单示例 |
+| example_events.py | 有界长轮询/SSE订阅 |
+| check_runtime.py | 实际服务只读诊断、预演及可选周末关闭报单门禁检查 |
+| validate_source.py | 编译、Python 3.6语法、GBK往返与SHA256报告 |
+| test_server.py / test_client.py | 假ContextInfo、临时库和假HTTP的独立隔离测试 |
+| DEPLOYMENT.md / API.md | 配置部署和接口合同 |
+| TRADING_AND_EVENTS.md / TESTING.md | 交易回推语义和分层验证 |
+
+除已转为GBK的服务端外，其余文件以UTF-8保存，中文文档和注释。服务端保留GBK声明，部署时必须真正转码；外部文件直接按UTF-8运行。没有Flask、requests、pandas、xtquant依赖。
+
+先按 [部署说明](DEPLOYMENT.md) 配置并在大QMT加载服务，再从本目录运行：
+
+```powershell
+python .\example_data.py --stock-code 000001.SH --count 60
+python .\example_events.py --seconds 20
+python .\example_events.py --sse --seconds 60 --heartbeat 10
+```
+
+以上命令会访问服务，只有获得实际服务访问授权后才执行；导入三个示例不会执行网络操作。指数代码仅用于行情展示。
+
+客户端令牌在 `bridge_client.py` 顶部 `DEFAULT_TOKEN` 配置，或由程序传入 `BridgeClient(token=...)`。令牌通过 `X-QMT-Bridge-Token` 请求头传递，不放入URL和示例命令行，不打印客户端配置。外部仅传账户别名。
+
+客户端方法返回完整响应字典：通常从 `result['data']` 取数据；健康字段、历史元数据及事件游标保留在顶层。每个业务方法自动先校验产品、API版本、运行就绪状态与所需能力，也可单独调用 `client.health(['market_data'])` 检查连接。
+
+默认双账户关闭、账号及 `DB_PATH` 留空、实盘权限关闭。订单示例必须自行指定证券、账户、价格、数量与稳定请求号，不能把文档参数当作交易建议。详见 [交易与回推](TRADING_AND_EVENTS.md)。
+
+本包的源码生成、静态编译与隔离测试均不代表实际大QMT加载、柜台报单或成交验收。离线验证方法见 [测试说明](TESTING.md)。
+
+

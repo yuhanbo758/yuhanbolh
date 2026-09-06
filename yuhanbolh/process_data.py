@@ -1088,21 +1088,35 @@ def process_immediate_rows(rows, cursor, conn):
 
 # 问财根据委托备注获取数据。参数分别是：委托备注、委托数量、策略名称。例如portfolio_rotation(order_note, order_quantity, strategy_name)
 def portfolio_rotation(order_note, order_quantity, strategy_name):
+    """查询轮动候选并附加委托信息，本函数不写库、不下单。
+
+    查询失败向调用方抛出异常；成功无候选返回固定四列空表。
+    明确按证券代码字段读取，排除正股字段、空代码，避免生成错误委托。
+    """
     # 问财只服务于轮动策略，延迟导入可降低普通数据处理功能的环境耦合。
-    import pywencai
+    from .wencai import get_wencai
 
     try:
-        if "基金" in order_note:
+        if "基金" in order_note or "ETF" in order_note.upper():
             query_type = "fund"
         elif "转债" in order_note:
             query_type = "conbond"
         else:
             query_type = "stock"
 
-        data = pywencai.get(query=order_note, query_type=query_type, loop=True)
+        data = get_wencai(order_note, query_type=query_type, loop=True)
 
-        # 提取第一列数据并重命名为"证券代码"
-        securities_codes = data.iloc[:, 0].rename("证券代码").to_frame()
+        # 明确识别证券字段，禁止按位置误取名称、序号或正股代码。
+        import re
+        aliases = ("证券代码", "股票代码", "基金代码", "可转债代码", "债券代码")
+        matches = [col for alias in aliases for col in data.columns
+                   if re.sub(r"\[[^\]]*\]", "", str(col)).split("@")[-1].strip() == alias]
+        if not matches:
+            raise ValueError("问财轮动结果缺少证券代码")
+        securities_codes = data[matches[0]].rename("证券代码").to_frame()
+        if (securities_codes["证券代码"].isna().any()
+                or securities_codes["证券代码"].astype("string").str.strip().eq("").any()):
+            raise ValueError("问财轮动结果包含空证券代码")
 
         # 增加多列数据
         securities_codes = securities_codes.assign(
@@ -1114,13 +1128,16 @@ def portfolio_rotation(order_note, order_quantity, strategy_name):
     except Exception as e:
         # 捕获所有异常并打印错误信息
         print(f"发生异常: {e}")
-        return None  # 返回 None 或其他适当的值以表示失败
+        raise  # 查询失败必须与成功空结果区分；调用方跳过本轮写库。
 
 
 # 根据委托备注获取数据
 def process_scheduled_tasks(scheduled_tasks, cursor, conn):
     """
-    处理定时任务
+    处理问财轮动任务；查询失败或成功空表时跳过该任务的所有写库操作。
+
+    scheduled_tasks为八元素行序列，cursor/conn由调用方持有；
+    成功非空任务按既有逻辑更新委托数据，不在此函数执行柜台报单。
     """
     try:
         for row in scheduled_tasks:
@@ -1128,7 +1145,11 @@ def process_scheduled_tasks(scheduled_tasks, cursor, conn):
             # 从'委托备注'获取查询参数
             query = remark
             # 调用portfolio_rotation(query)
-            A_data = portfolio_rotation(query, quantity, strategy)
+            try:
+                A_data = portfolio_rotation(query, quantity, strategy)
+            except Exception:
+                # 当前行查询失败时不删除旧委托、不生成新委托，继续其他任务。
+                continue
             # 假设A_data有列['证券代码', '委托数量', '策略名称', '委托备注']
             if A_data.empty:
                 continue

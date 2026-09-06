@@ -29,13 +29,14 @@ schedule
 akshare
 scipy
 yfinance
-pywencai
 baostock
 pytdx
 MetaTrader5
 yuhanbolh
 
 ## 安装
+
+本次源码要求 Python >=3.11、AKShare >=1.18.94。大QMT独立服务端仍使用其内置 Python 3.6。
 
 ```powershell
 python -m pip install --upgrade yuhanbolh
@@ -73,3 +74,22 @@ QMT 的 `xtquant` 仍需按迅投官方方式安装。包入口已改为按需�
 3. 打开 `Settings → Actions → General → Workflow permissions`，选择 `Read and write permissions`。
 
 自动生成的版本提交带有 `[skip ci]`，不会递归触发下一次发布。
+
+
+## 问财 OpenAPI 与标准大QMT桥接
+
+问财凭据仅从环境变量 `IWENCAI_API_KEY` 读取，可选 `IWENCAI_BASE_URL`。
+配置后重新启动 Python 进程；不要将密钥写入源码或提交到仓库。
+
+```python
+import yuhanbolh as lh
+
+data = lh.get_wencai("可转债；债券余额", query_type="conbond")
+bonds = lh.wencai_conditional_query("可转债；债券余额；转股溢价率")
+client = lh.BridgeClient()  # 构造不联网；业务调用前自动校验服务健康和协议。
+# 显式调用时只生成文件，不启动QMT；目标须为新建或空目录。
+# directory = lh.export_qmt_bridge("./qmt_bridge")
+```
+
+迁移、异常行为、数据库参数及文档变更见 [本次迁移说明](docs/migration-openapi-bridge.md)。
+桥接订单默认 `dry_run=True`，模板账户及真实报单默认关闭；不包含撤单、条件单或算法单。

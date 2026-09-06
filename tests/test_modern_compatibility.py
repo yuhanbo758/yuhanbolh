@@ -14,15 +14,26 @@ class PublicApiTests(unittest.TestCase):
     """验证普通数据分析用户不会被可选交易终端依赖阻断。"""
 
     def test_package_import_does_not_eagerly_load_xtquant(self) -> None:
-        # 清除当前进程可能由其他测试加载的包，确保验证的是首次导入边界。
-        for module_name in list(sys.modules):
-            if module_name == "yuhanbolh" or module_name.startswith("yuhanbolh."):
-                del sys.modules[module_name]
-
-        import yuhanbolh
-
-        self.assertNotIn("xtquant", sys.modules)
-        self.assertEqual(set(yuhanbolh.__all__), set(yuhanbolh._EXPORT_MODULE))
+        # 子进程验证首次导入，不清空共享模块缓存影响其他测试的模拟对象。
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+import sys
+import yuhanbolh as lh
+assert set(lh.__all__) == set(lh._EXPORT_MODULE)
+assert callable(lh.get_wencai) and callable(lh.wencai_conditional_query_nz100)
+assert callable(lh.BridgeClient) and callable(lh.export_qmt_bridge)
+assert not {'pywencai', 'xtquant', 'MetaTrader5'}.intersection(sys.modules)
+assert not hasattr(lh, 'get_pywencai')
+assert not hasattr(lh, 'akshare_index_analysis')
+""",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_core_indicator_is_available_from_package_root(self) -> None:
         from yuhanbolh import MA

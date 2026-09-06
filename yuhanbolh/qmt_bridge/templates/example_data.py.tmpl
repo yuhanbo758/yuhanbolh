@@ -1,0 +1,23 @@
+# -*- coding: utf-8 -*-
+"""只读行情示例；导入不运行。令牌在bridge_client.py顶部配置。"""
+import argparse
+import json
+from bridge_client import BridgeClient, DEFAULT_BASE_URL
+
+
+def main():
+    parser = argparse.ArgumentParser(description="获取行情及历史数据，不下单")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--stock-code", default="000001.SH")
+    parser.add_argument("--count", type=int, default=60)
+    args = parser.parse_args()
+    client = BridgeClient(args.base_url)
+    client.health(["market_data"])
+    # 保留原始行情字典及历史元数据，不自行填充缺失行情。
+    print(json.dumps(client.tick(args.stock_code), ensure_ascii=False, indent=2))
+    print(json.dumps(client.history_data(args.stock_code, count=args.count),
+                     ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

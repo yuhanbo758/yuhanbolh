@@ -1,0 +1,1054 @@
+# -*- coding: gbk -*-
+"""通用大QMT HTTP桥接。工作区UTF-8，部署副本须显式转GBK。
+
+仅由大QMT生命周期启动。HTTP线程不直接调用原生接口；导入不启动服务或连接库。
+"""
+import builtins
+import hashlib
+import hmac
+import json
+import math
+import os
+import queue
+import re
+import socketserver
+import sqlite3
+import threading
+import time
+import uuid
+from collections import deque
+from contextlib import contextmanager
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+# 配置区：账号只保存在大QMT端；禁用账户不会从旧ContextInfo恢复。
+ENABLE_NORMAL_ACCOUNT = False  # 普通账户开关；True启用查询/回推，False禁用且不会读取旧账号。
+ENABLE_CREDIT_ACCOUNT = False  # 信用账户开关；独立于普通账户，开启后仍需填写信用账号。
+NORMAL_ACCOUNT_ID = ""  # 普通资金账号；仅保存在大QMT服务端，启用普通账户时必须填写。
+CREDIT_ACCOUNT_ID = ""  # 信用资金账号；启用信用账户时必须填写，外部请求只传credit别名。
+DB_PATH = ""  # 独立业务库绝对路径，父目录须存在；纯行情可留空。
+BRIDGE_HOST = "127.0.0.1"  # 本机监听地址；本版只允许127.0.0.1，不对外网开放。
+BRIDGE_PORT = 1693  # 无备用端口，避免误连其他模型。
+BRIDGE_ACCESS_TOKEN = ""  # HTTP访问令牌；与客户端保持一致，空字符串表示不校验令牌。
+BRIDGE_ALLOW_LIVE_ORDERS = False  # 真实报单开关；开启后仍检查账户、LIVE_ORDER确认及交易时段。
+RPC_TIMEOUT_SECONDS = 60.0  # HTTP请求等待QMT回调执行的最长秒数；客户端超时应大于此值。
+EVENT_HISTORY_LIMIT = 1000  # 内存回推最多保留的事件条数；超出或重启后需要通过查询对账。
+RECONCILE_INTERVAL_SECONDS = 30.0  # 定时核对本桥接订单，恢复重启/断线漏掉的回报。
+TIMER_START_TIME = "2019-10-14 13:20:00"  # 原生run_time历史起点；初始化注册后每秒驱动，周末不依赖新Tick。
+
+PRODUCT = "qmt_bridge_standard"
+API_VERSION = 1
+SOURCE_VERSION = "20260905.standard.2"
+CAPABILITIES = ["market_data", "account_query", "direct_order", "trade_ledger",
+                "events_long_poll", "events_sse"]
+OP_TYPES = {"normal": {23: "BUY", 24: "SELL"},
+            "credit": {27: "BUY", 28: "SELL", 29: "BUY", 31: "SELL", 33: "BUY", 34: "SELL"}}
+# 股票买卖使用m_nOffsetFlag，而非始终为48的m_nDirection。
+OFFSET_ACTIONS = {48: "BUY", 49: "SELL"}
+TERMINAL_ORDER_STATUSES = (53, 54, 56, 57)
+EVENT_TYPES = ("account_status", "position_change", "stock_order", "stock_trade", "order_error", "reconciliation")
+_context = None
+_running = False
+_timer_registered = False
+_server = None
+_server_thread = None
+_lifecycle_lock = threading.RLock()
+_rpc_queue = queue.Queue(maxsize=100)
+_drain_lock = threading.Lock()
+_callback_local = threading.local()
+_events = deque(maxlen=EVENT_HISTORY_LIMIT)
+_event_condition = threading.Condition()
+_sequence = 0
+_stream_id = uuid.uuid4().hex
+_last_reconcile = 0.0
+_timer_count = 0
+_last_timer_at = ""
+_last_callback_at = ""
+_last_callback_monotonic = 0.0
+
+
+def text_value(value):
+    """原生文本可能是GBK字节，统一变为Python文本。"""
+    if isinstance(value, bytes):
+        return value.decode("gbk", errors="replace")
+    return "" if value is None else str(value)
+
+
+def attr(row, name, default=None):
+    return row.get(name, default) if isinstance(row, dict) else getattr(row, name, default)
+
+
+def safe_message(value):
+    """柜台错误可能含资金账号，输出前替换配置中的敏感值。"""
+    result = text_value(value)
+    for secret in (NORMAL_ACCOUNT_ID, CREDIT_ACCOUNT_ID, BRIDGE_ACCESS_TOKEN, DB_PATH):
+        if secret:
+            result = result.replace(secret, "[redacted]")
+    return result
+
+
+def json_value(value):
+    """处理原生标量和数组，不导入numpy/pandas，不输出NaN JSON。"""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_value(v) for v in value]
+    if isinstance(value, bytes):
+        return text_value(value)
+    if hasattr(value, "tolist"):
+        return json_value(value.tolist())
+    if hasattr(value, "item"):
+        return json_value(value.item())
+    return text_value(value)
+
+
+def success(data=None, **fields):
+    result = {"status": "success", "data": json_value(data)}
+    result.update(fields)
+    return result
+
+
+def boolean(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if str(value).lower() in ("true", "1"):
+        return True
+    if str(value).lower() in ("false", "0"):
+        return False
+    raise ValueError("布尔参数只能为true/false或1/0")
+
+
+def integer(value, name, minimum=0, maximum=2147483647):
+    if isinstance(value, bool) or not re.fullmatch(r"[0-9]+", str(value)):
+        raise ValueError(name + "必须是整数")
+    result = int(value)
+    if not minimum <= result <= maximum:
+        raise ValueError(name + "超出允许范围")
+    return result
+
+
+def number(value, name, minimum=0.0, maximum=1e15):
+    if isinstance(value, bool):
+        raise ValueError(name + "必须是有限数字")
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(name + "必须是有限数字")
+    if not math.isfinite(result) or not minimum <= result <= maximum:
+        raise ValueError(name + "超出允许范围")
+    return result
+
+
+def stock_code(value):
+    result = text_value(value).strip().upper()
+    if not re.fullmatch(r"\d{6}\.(SH|SZ|BJ)", result):
+        raise ValueError("证券代码必须为六位代码及.SH/.SZ/.BJ后缀")
+    return result
+
+
+def configured_accounts():
+    result = {}
+    for scope, enabled, account in (("normal", ENABLE_NORMAL_ACCOUNT, NORMAL_ACCOUNT_ID),
+                                     ("credit", ENABLE_CREDIT_ACCOUNT, CREDIT_ACCOUNT_ID)):
+        if enabled:
+            if not isinstance(account, str) or not account.strip():
+                raise ValueError(scope + "启用时必须填写账号")
+            result[scope] = account.strip()
+    if len(set(result.values())) != len(result):
+        raise ValueError("普通和信用账号不能相同")
+    return result
+
+
+def account_specs(scope):
+    if scope not in ("normal", "credit", "all"):
+        raise ValueError("account_type只能为normal/credit/all")
+    accounts = configured_accounts()
+    if scope != "all" and scope not in accounts:
+        raise ValueError(scope + "账户未启用")
+    return [(key, value, "stock" if key == "normal" else "credit")
+            for key, value in accounts.items() if scope in (key, "all")]
+
+
+def native_function(name):
+    function = globals().get(name) or getattr(builtins, name, None)
+    if not callable(function):
+        raise RuntimeError("大QMT未注入原生函数: " + name)
+    return function
+
+
+def require_qmt_thread():
+    if not _running or _context is None or not getattr(_callback_local, "active", False):
+        raise RuntimeError("原生操作必须在运行中的大QMT回调线程执行")
+
+
+def verify_schema(conn):
+    """版本标记不能代替真实结构检查，拒绝残缺库和不兼容旧结构。"""
+    expected = {
+        "bridge_meta": "product schema_version",
+        "bridge_requests": "request_id fingerprint account_type account_id stock_code action op_type price volume strategy_name broker_remark trade_date order_id submission_state order_status remaining result_json",
+        "bridge_deals": "account_id trade_date deal_id request_id order_id price volume trade_amount trade_time source"}
+    for table,columns in expected.items():
+        actual = [row[1] for row in conn.execute("PRAGMA table_info("+table+")")]
+        if actual != columns.split():
+            raise ValueError("独立数据库字段结构不匹配，请使用新的专用数据库")
+    indexes = {row[1]:row for row in conn.execute("PRAGMA index_list(bridge_requests)")}
+    index = indexes.get("broker_order_key")
+    if index is None or index[2] != 1 or index[4] != 1:
+        raise ValueError("独立数据库缺少柜台委托唯一索引")
+    columns = [row[2] for row in conn.execute("PRAGMA index_info(broker_order_key)")]
+    if columns != ["account_id","trade_date","order_id"]:
+        raise ValueError("独立数据库柜台委托唯一索引不匹配")
+
+
+@contextmanager
+def callback_scope(context):
+    global _context
+    previous = getattr(_callback_local, "active", False)
+    _callback_local.active = True
+    _context = context
+    try:
+        yield
+    finally:
+        _callback_local.active = previous
+
+
+@contextmanager
+def database(write=False):
+    """短事务且显式关闭句柄。读取接口不创建不存在的数据库。"""
+    if not DB_PATH or not os.path.isabs(DB_PATH) or not os.path.isfile(DB_PATH):
+        raise ValueError("DB_PATH须为已初始化的独立数据库绝对路径")
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+        marker = conn.execute("SELECT product,schema_version FROM bridge_meta").fetchall()
+        if len(marker) != 1 or tuple(marker[0]) != (PRODUCT, 1):
+            raise ValueError("数据库归属或结构版本不匹配")
+        verify_schema(conn)
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def initialize_database():
+    """仅init调用。未知库拒绝接管，不迁移、不删除任何现有表。"""
+    if not DB_PATH:
+        if BRIDGE_ALLOW_LIVE_ORDERS:
+            raise ValueError("开启真实报单必须配置DB_PATH")
+        return
+    if not os.path.isabs(DB_PATH) or not os.path.isdir(os.path.dirname(DB_PATH)):
+        raise ValueError("DB_PATH须为父目录已存在的绝对路径")
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if names:
+            if names != {"bridge_meta", "bridge_requests", "bridge_deals"}:
+                raise ValueError("拒绝使用其他应用的数据库")
+            if conn.execute("SELECT product,schema_version FROM bridge_meta").fetchall() != [(PRODUCT, 1)]:
+                raise ValueError("数据库产品或结构版本不匹配")
+        else:
+            conn.execute("CREATE TABLE bridge_meta(product TEXT NOT NULL,schema_version INTEGER NOT NULL)")
+            conn.execute("INSERT INTO bridge_meta VALUES (?,1)", (PRODUCT,))
+            conn.execute("""CREATE TABLE bridge_requests(
+                request_id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,account_type TEXT NOT NULL,
+                account_id TEXT NOT NULL,stock_code TEXT NOT NULL,action TEXT NOT NULL,
+                op_type INTEGER NOT NULL,price REAL NOT NULL,volume INTEGER NOT NULL,
+                strategy_name TEXT NOT NULL,broker_remark TEXT NOT NULL UNIQUE,
+                trade_date TEXT NOT NULL,order_id TEXT NOT NULL DEFAULT '',
+                submission_state TEXT NOT NULL,order_status INTEGER,
+                remaining INTEGER NOT NULL CHECK(remaining>=0),result_json TEXT NOT NULL DEFAULT '{}')""")
+            conn.execute("""CREATE TABLE bridge_deals(
+                account_id TEXT NOT NULL,trade_date TEXT NOT NULL,deal_id TEXT NOT NULL,
+                request_id TEXT NOT NULL REFERENCES bridge_requests(request_id),
+                order_id TEXT NOT NULL,price REAL NOT NULL,volume INTEGER NOT NULL,
+                trade_amount REAL,trade_time TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'callback',
+                PRIMARY KEY(account_id,trade_date,deal_id))""")
+            conn.execute("CREATE UNIQUE INDEX broker_order_key ON bridge_requests(account_id,trade_date,order_id) WHERE order_id!=''")
+        verify_schema(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def normalize_order(params):
+    scope = text_value(params.get("account_type", "normal"))
+    specs = account_specs(scope)
+    if scope == "all":
+        raise ValueError("报单只能选择单个账户")
+    action = text_value(params.get("action")).upper()
+    raw_op = params.get("op_type")
+    if raw_op is None:
+        if scope == "credit":
+            raise ValueError("信用账户必须显式填写op_type")
+        raw_op = 23 if action == "BUY" else 24
+    op = integer(raw_op, "op_type")
+    if action not in ("BUY", "SELL") or OP_TYPES[scope].get(op) != action:
+        raise ValueError("账户、op_type和action不匹配")
+    name = text_value(params.get("strategy_name", "http_bridge")).strip()
+    if not name or len(name.encode("gbk")) > 20 or any(ord(c) < 32 for c in name):
+        raise ValueError("strategy_name须非空且不超过20个GBK字节")
+    request_id = text_value(params.get("user_order_id", "")).strip()
+    if not request_id or len(request_id.encode("utf-8")) > 128 or any(ord(c) < 32 for c in request_id):
+        raise ValueError("必须填写稳定user_order_id，且不超过128个UTF-8字节")
+    if "order_remark" in params:
+        raise ValueError("通用版柜台备注由服务端生成，不接受order_remark")
+    return {"request_id": request_id,"account_type": scope,"account_id": specs[0][1],
+            "stock_code": stock_code(params.get("stock_code")),"action": action,"op_type": op,
+            "price": number(params.get("price"), "price", 0.00000001),
+            "volume": integer(params.get("volume"), "volume", 1),"strategy_name": name}
+
+
+def order_fingerprint(order):
+    return hashlib.sha256(json.dumps(order, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
+def public_route(row, duplicate=False):
+    result = {key: row[key] for key in ("request_id","account_type","stock_code","action",
+              "op_type","price","volume","strategy_name","broker_remark","trade_date",
+              "order_id","submission_state","order_status","remaining")}
+    result["duplicate_request"] = duplicate
+    result["submission_result"] = json.loads(row["result_json"])
+    return result
+
+
+def trading_session(now=None):
+    """墙钟和原生交易日历双重门禁；日历异常时拒绝，不猜节假日。"""
+    require_qmt_thread()
+    now = now or datetime.now()
+    date = now.strftime("%Y%m%d")
+    clock = now.strftime("%H%M%S")
+    if now.weekday() >= 5 or not ("093000" <= clock < "113000" or "130000" <= clock < "145700"):
+        raise ValueError("当前不在A股连续竞价报单时段")
+    dates = _context.get_trading_dates("000001.SH", date, date, 1, "1d")
+    if date not in [text_value(v).replace("-", "")[:8] for v in dates]:
+        raise ValueError("大QMT日历未确认今天为交易日")
+    return date
+
+
+def submit_order(params):
+    require_qmt_thread()
+    order = normalize_order(params)
+    if boolean(params.get("dry_run"), True):
+        public = {key: value for key, value in order.items() if key != "account_id"}
+        public.update(dry_run=True, submission_state="dry_run",
+                      message="仅参数预演，未检查柜台资金/资格，未写库或报单")
+        return success(public)
+    if params.get("confirm_live_order") != "LIVE_ORDER" or not BRIDGE_ALLOW_LIVE_ORDERS:
+        raise ValueError("真实报单需要服务端开关及LIVE_ORDER确认")
+    fingerprint = order_fingerprint(order)
+    with database() as conn:
+        old = conn.execute("SELECT * FROM bridge_requests WHERE request_id=?", (order["request_id"],)).fetchone()
+        if old is not None:
+            if old["fingerprint"] != fingerprint:
+                raise ValueError("相同请求号参数冲突")
+            return success(public_route(old, True))
+    date = trading_session()
+    function = native_function("passorder")
+    broker_remark = "qb" + uuid.uuid4().hex[:18]
+    with database(True) as conn:
+        # 即使客户端换请求号，仍拦截同账户/策略/证券/方向的活动请求。
+        active = conn.execute("""SELECT request_id FROM bridge_requests
+            WHERE account_id=? AND strategy_name=? AND stock_code=? AND action=?
+            AND remaining>0 AND submission_state!='rejected'
+            AND (order_status IS NULL OR order_status NOT IN (53,54,56,57))""",
+            (order["account_id"],order["strategy_name"],order["stock_code"],order["action"])).fetchone()
+        if active:
+            raise ValueError("存在未确认终态的活动请求，请先查询对账: " + active[0])
+        conn.execute("""INSERT INTO bridge_requests(request_id,fingerprint,account_type,account_id,
+            stock_code,action,op_type,price,volume,strategy_name,broker_remark,trade_date,
+            submission_state,remaining) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order["request_id"],fingerprint,order["account_type"],order["account_id"],
+             order["stock_code"],order["action"],order["op_type"],order["price"],order["volume"],
+             order["strategy_name"],broker_remark,date,"submitting",order["volume"]))
+    # 先提交路由事务再报单，同步回调先到也能匹配；异常不自动重试。
+    try:
+        result = function(order["op_type"],1101,order["account_id"],order["stock_code"],
+                          11,order["price"],order["volume"],order["strategy_name"],2,
+                          broker_remark,_context)
+        state = "rejected" if isinstance(result, (int,float)) and result < 0 else "passorder_called"
+        details = {"passorder_return": safe_message(result) if isinstance(result, (str,bytes)) else json_value(result),
+                   "message": "仅代表passorder调用结果；柜台接受和成交需查询/回调证明"}
+    except Exception as exc:
+        state = "unknown"
+        details = {"message": "提交结果未知，禁止自动重报: " + safe_message(exc)}
+    with database(True) as conn:
+        saved = conn.execute("SELECT result_json FROM bridge_requests WHERE request_id=?", (order["request_id"],)).fetchone()
+        combined = json.loads(saved[0])
+        combined.update(details)  # 保留同步异常回调早于passorder返回时记录的错误事实。
+        conn.execute("UPDATE bridge_requests SET submission_state=?,result_json=? WHERE request_id=?",
+                     (state,json.dumps(combined, ensure_ascii=False),order["request_id"]))
+        route = conn.execute("SELECT * FROM bridge_requests WHERE request_id=?", (order["request_id"],)).fetchone()
+        return success(public_route(route))
+
+
+def normalize_detail(row, scope, kind):
+    """白名单输出；缺失数值为null而非伪造0；真实账户只在库内使用。"""
+    result = {"account_type": scope}
+    maps = {
+        "account": {"balance":"m_dBalance","available":"m_dAvailable",
+                    "market_value":"m_dInstrumentValue","net_asset":"m_dAssureAsset"},
+        "position": {"volume":"m_nVolume","available":"m_nCanUseVolume",
+                     "cost_price":"m_dOpenPrice","market_value":"m_dInstrumentValue"},
+        "order": {"order_id":"m_strOrderSysID","order_status":"m_nOrderStatus",
+                  "volume":"m_nVolumeTotalOriginal","traded_volume":"m_nVolumeTraded",
+                  "price":"m_dLimitPrice","trade_date":"m_strInsertDate",
+                  "order_time":"m_strInsertTime","remark":"m_strRemark","offset_flag":"m_nOffsetFlag"},
+        "deal": {"order_id":"m_strOrderSysID","deal_id":"m_strTradeID","volume":"m_nVolume",
+                 "price":"m_dPrice","trade_amount":"m_dTradeAmount","trade_date":"m_strTradeDate",
+                 "trade_time":"m_strTradeTime","remark":"m_strRemark","offset_flag":"m_nOffsetFlag"}}
+    for key, source in maps[kind].items():
+        value = json_value(attr(row, source))
+        result[key] = safe_message(value) if isinstance(value, str) else value
+    if kind != "account":
+        instrument = text_value(attr(row, "m_strInstrumentID", ""))
+        exchange = text_value(attr(row, "m_strExchangeID", ""))
+        result["stock_code"] = instrument if "." in instrument else instrument + "." + exchange
+    return result
+
+
+def callback_identity(row, is_deal):
+    account = text_value(attr(row, "m_strAccountID", ""))
+    matches = [scope for scope, value in configured_accounts().items() if value == account]
+    if len(matches) != 1:
+        raise ValueError("回调账号未启用或无法识别")
+    data = normalize_detail(row, matches[0], "deal" if is_deal else "order")
+    date = text_value(data["trade_date"]).replace("-", "")
+    if not re.fullmatch(r"\d{8}", date):
+        raise ValueError("回调缺少有效交易日期，禁止猜测归账日期")
+    action = OFFSET_ACTIONS.get(data["offset_flag"])
+    if action is None:
+        raise ValueError("回调买卖方向无法识别")
+    return account,data,date,action
+
+
+def match_route(conn, row, is_deal):
+    account,data,date,action = callback_identity(row, is_deal)
+    order_id = text_value(data["order_id"])
+    if not order_id:
+        raise ValueError("回调缺少柜台委托号")
+    candidates = conn.execute("""SELECT * FROM bridge_requests WHERE account_id=?
+        AND stock_code=? AND action=? AND trade_date=?""", (account,data["stock_code"],action,date)).fetchall()
+    bound = [r for r in candidates if r["order_id"] == order_id]
+    if bound:
+        candidates = bound
+    else:
+        candidates = [r for r in candidates if not r["order_id"] and r["submission_state"] != "rejected"]
+    remark = text_value(data["remark"])
+    if not bound and not remark:
+        # 同账号手工单也可能证券/方向/数量相同。唯一候选不是来源证明。
+        raise ValueError("初次绑定必须带桥接备注，空备注仅允许已绑定柜台号")
+    if remark:
+        candidates = [r for r in candidates if r["broker_remark"] == remark]
+    if len(candidates) != 1:
+        raise ValueError("回调路由未找到或存在歧义，停止自动归账")
+    route = candidates[0]
+    if not is_deal and data["volume"] is not None and data["volume"] != route["volume"]:
+        raise ValueError("回调委托数量与路由冲突")
+    return route,data,account,date
+
+
+def persist_callback(row, is_deal=False, source="callback"):
+    """成交、柜台号绑定、剩余量同事务更新；部分成交按成交编号分别记账。"""
+    require_qmt_thread()
+    with database(True) as conn:
+        route,data,account,date = match_route(conn, row, is_deal)
+        request_id = route["request_id"]
+        if is_deal:
+            deal_id = text_value(data["deal_id"])
+            if not deal_id:
+                raise ValueError("缺少成交编号，禁止用委托号替代")
+            volume = integer(data["volume"], "成交量", 1)
+            price = number(data["price"], "成交价", 0.00000001)
+            old = conn.execute("SELECT * FROM bridge_deals WHERE account_id=? AND trade_date=? AND deal_id=?",
+                               (account,date,deal_id)).fetchone()
+            if old:
+                if (old["request_id"],old["order_id"],old["volume"],old["price"]) != (request_id,data["order_id"],volume,price):
+                    raise ValueError("成交编号内容冲突")
+                return {"request_id":request_id,"ledger_status":"duplicate"}
+            if volume > route["remaining"]:
+                raise ValueError("成交量超过路由剩余量")
+            conn.execute("INSERT INTO bridge_deals VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (account,date,deal_id,request_id,data["order_id"],price,volume,
+                          data["trade_amount"],text_value(data["trade_time"]),source))
+            conn.execute("UPDATE bridge_requests SET remaining=remaining-?,order_id=? WHERE request_id=?",
+                         (volume,data["order_id"],request_id))
+            status = "written"
+        else:
+            # 委托已成不能扣减成交剩余量，只有deal回调可以落成交账。
+            order_status = data["order_status"]
+            if route["order_status"] in TERMINAL_ORDER_STATUSES:
+                order_status = route["order_status"]
+            conn.execute("UPDATE bridge_requests SET order_id=?,order_status=? WHERE request_id=?",
+                         (data["order_id"],order_status,request_id))
+            status = "order_updated"
+        return {"request_id":request_id,"ledger_status":status}
+
+
+def ledger(params):
+    specs = account_specs(text_value(params.get("account_type", "all")))
+    request_id = text_value(params.get("request_id", ""))
+    data = []
+    with database() as conn:
+        for scope,account,_ in specs:
+            rows = conn.execute("""SELECT d.*,r.stock_code,r.action,r.strategy_name FROM bridge_deals d
+                JOIN bridge_requests r ON d.request_id=r.request_id
+                WHERE d.account_id=? AND (?='' OR d.request_id=?) ORDER BY d.trade_date,d.trade_time,d.deal_id""",
+                (account,request_id,request_id)).fetchall()
+            for row in rows:
+                item = dict(row)
+                del item["account_id"]
+                item["account_type"] = scope
+                data.append(item)
+    return success(data)
+
+
+def query_details(params, kind):
+    require_qmt_thread()
+    specs = account_specs(text_value(params.get("account_type", "all")))
+    if not specs:
+        return success([])
+    function = native_function("get_trade_detail_data")
+    data = []
+    target = stock_code(params["stock_code"]) if params.get("stock_code") else ""
+    for scope,account,native_type in specs:
+        for row in function(account,native_type,kind) or []:
+            item = normalize_detail(row, scope, kind)
+            if target and item.get("stock_code") != target:
+                continue
+            if kind in ("order", "deal") and DB_PATH:
+                try:
+                    with database() as conn:
+                        route,_,_,_ = match_route(conn,row,kind == "deal")
+                        item["request_id"] = route["request_id"]
+                except ValueError:
+                    item["routing_status"] = "unresolved"
+            data.append(item)
+    return success(data)
+
+
+def query_request(params):
+    """原请求号只读查询，不必再次POST，也不依赖柜台是否已返回委托。"""
+    request_id = text_value(params.get("request_id", ""))
+    specs = account_specs(text_value(params.get("account_type", "all")))
+    with database() as conn:
+        row = conn.execute("SELECT * FROM bridge_requests WHERE request_id=?", (request_id,)).fetchone()
+        allowed = {account for _,account,_ in specs}
+        values = [public_route(row)] if row and row["account_id"] in allowed else []
+    return success(values, source="persistent_request")
+
+
+def reconcile_trades():
+    """只在QMT线程核对本桥接持久化请求；查询HTTP本身仍为只读。
+
+    首次关联需要桥接唯一备注，已绑定后可匹配空备注。柜台查询恢复的成交明确
+    标记source=reconciliation，不能伪装成收到原始成交回调；不调用报单函数。
+    """
+    require_qmt_thread()
+    if not DB_PATH:
+        return
+    with database() as conn:
+        accounts = {row[0] for row in conn.execute("SELECT DISTINCT account_id FROM bridge_requests")}
+    if not accounts:
+        return
+    function = native_function("get_trade_detail_data")
+    updated = 0
+    unresolved = 0
+    for scope,account,native_type in account_specs("all"):
+        if account not in accounts:
+            continue
+        # 先恢复委托号，再处理可能没有备注的成交；不根据委托已成伪造成交。
+        for kind in ("order", "deal"):
+            rows = function(account,native_type,kind) or []
+            for row in rows:
+                try:
+                    with database() as conn:
+                        route,_,_,_ = match_route(conn,row,kind == "deal")
+                        if kind == "order" and route["order_id"] and route["order_status"] == attr(row,"m_nOrderStatus"):
+                            continue
+                    result = persist_callback(row,kind == "deal",source="reconciliation")
+                    if result["ledger_status"] != "duplicate":
+                        updated += 1
+                except ValueError:
+                    unresolved += 1  # 外部手工单或缺字段记录不接管，也不猜测。
+    if updated:
+        publish("reconciliation", {"source":"query_reconciliation","updated":updated,
+                                   "unresolved":unresolved,"message":"本地请求/成交记录已核对恢复，请查询账本"})
+
+
+def market(params, history=False):
+    require_qmt_thread()
+    code = stock_code(params.get("stock_code"))
+    if not history:
+        result = _context.get_full_tick([code])
+        return success((result or {}).get(code), stock_code=code)
+    fields = params.get("fields", "open,high,low,close,volume")
+    fields = [s.strip() for s in fields.split(",") if s.strip()] if isinstance(fields, str) else fields
+    if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
+        raise ValueError("fields须为字段列表或逗号分隔文本")
+    if boolean(params.get("subscribe"), False):
+        raise ValueError("历史接口仅回读缓存，subscribe必须为false")
+    args = {"fields":fields,"stock_code":[code],"period":text_value(params.get("period", "1d")),
+            "count":integer(params.get("count", 60), "count", 1, 10000),
+            "start_time":text_value(params.get("start_time", "")),
+            "end_time":text_value(params.get("end_time", "")),
+            "dividend_type":text_value(params.get("dividend_type", "none")),
+            "fill_data":boolean(params.get("fill_data"), False),"subscribe":False}
+    result = _context.get_market_data_ex(**args)
+    frame = (result or {}).get(code)
+    rows = []
+    if frame is not None:
+        for index,row in frame.iterrows():
+            item = {name:json_value(row.get(name)) for name in fields if name != "time"}
+            item["time"] = text_value(index)
+            rows.append(item)
+    return success(rows, stock_code=code, period=args["period"], fields=fields,
+                   dividend_type=args["dividend_type"], fill_data=args["fill_data"], subscribe=False)
+
+
+def execute_rpc(path, params):
+    require_qmt_thread()
+    if path in ("/tick", "/market", "/history_data"):
+        return market(params,path == "/history_data")
+    kinds = {"/assets":"account","/positions":"position","/orders":"order","/trades":"deal"}
+    if path in kinds:
+        return query_details(params,kinds[path])
+    if path == "/trade/order":
+        return submit_order(params)
+    raise ValueError("未知RPC操作")
+
+
+def call_qmt(path, params):
+    task = {"path":path,"params":dict(params),"deadline":time.monotonic()+RPC_TIMEOUT_SECONDS,
+            "state":"queued","lock":threading.Lock(),"done":threading.Event()}
+    with _lifecycle_lock:
+        if not _running:
+            raise RuntimeError("大QMT尚未就绪")
+        _rpc_queue.put_nowait(task)
+    if not task["done"].wait(RPC_TIMEOUT_SECONDS):
+        with task["lock"]:
+            if task["state"] == "queued":
+                task["state"] = "expired"
+                raise TimeoutError("RPC排队超时，尚未执行；过期请求不会报单")
+            if task["state"] == "running":
+                raise TimeoutError("RPC执行中超时，结果未知；保持原请求号查询，禁止自动重报")
+    if "error" in task:
+        raise task["error"]
+    return task["result"]
+
+
+def drain_rpc():
+    require_qmt_thread()
+    if not _drain_lock.acquire(False):
+        return
+    try:
+        for _ in range(20):
+            try:
+                task = _rpc_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                with task["lock"]:
+                    if task["state"] != "queued" or time.monotonic() >= task["deadline"]:
+                        task["state"] = "expired"
+                        task["error"] = TimeoutError("请求已过期，未执行")
+                        task["done"].set()
+                        continue
+                    task["state"] = "running"
+                try:
+                    task["result"] = execute_rpc(task["path"],task["params"])
+                    print("[qmt_bridge_standard] RPC {} success".format(task["path"]))
+                except Exception as exc:
+                    task["error"] = exc
+                    print("[qmt_bridge_standard] RPC {} error: {}".format(task["path"],safe_message(exc)))
+                finally:
+                    with task["lock"]:
+                        task["state"] = "done"
+                        task["done"].set()
+            finally:
+                _rpc_queue.task_done()
+    finally:
+        _drain_lock.release()
+
+
+def publish(event_type, data):
+    global _sequence
+    with _event_condition:
+        _sequence += 1
+        event = {"event_id":_sequence,"stream_id":_stream_id,"event_type":event_type,"data":json_value(data)}
+        _events.append(event)
+        _event_condition.notify_all()
+        return event
+
+
+def events_after(params):
+    after = integer(params.get("after_id", 0), "after_id", maximum=2**63-1)
+    timeout = number(params.get("timeout", 0), "timeout", 0, 30)
+    types = text_value(params.get("event_types", ""))
+    types = set(types.split(",")) if types else set(EVENT_TYPES)
+    if not types.issubset(EVENT_TYPES):
+        raise ValueError("未知event_types")
+    old_stream = text_value(params.get("stream_id", ""))
+    deadline = time.monotonic()+timeout
+    with _event_condition:
+        while True:
+            oldest = _events[0]["event_id"] if _events else _sequence+1
+            gap = bool((old_stream and old_stream != _stream_id) or after > _sequence or after < oldest-1)
+            cursor = oldest-1 if gap else after
+            values = [v for v in _events if v["event_id"] > cursor and v["event_type"] in types]
+            if values or gap or time.monotonic() >= deadline or not _running:
+                return success(values, stream_id=_stream_id, history_truncated=gap,
+                               next_event_id=_sequence, oldest_event_id=oldest)
+            _event_condition.wait(max(0.0,deadline-time.monotonic()))
+
+
+def health():
+    return success(product=PRODUCT, api_version=API_VERSION, source_version=SOURCE_VERSION,
+                   capabilities=CAPABILITIES, runtime_ready=_running and _context is not None,
+                   accounts=list(configured_accounts()), live_orders_enabled=BRIDGE_ALLOW_LIVE_ORDERS,
+                   ledger_configured=bool(DB_PATH), stream_id=_stream_id,
+                   timer_registered=_timer_registered, timer_count=_timer_count,
+                   last_timer_at=_last_timer_at,last_callback_at=_last_callback_at,
+                   rpc_queue_size=_rpc_queue.qsize(),
+                   rpc_ready=_running and _timer_count>0 and time.monotonic()-_last_callback_monotonic<10.0,
+                   port=_server.server_address[1] if _server is not None else BRIDGE_PORT)
+
+
+class BridgeServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = False
+
+    def handle_error(self, request, client_address):
+        print("[qmt_bridge_standard] HTTP连接处理异常")
+
+
+class BridgeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format_string, *args):
+        return  # 不记录带查询参数的URL或访问令牌。
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(10.0)
+        self.response_started = False
+
+    def finish(self):
+        try:
+            super().finish()
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            self.close_connection = True
+
+    def write_json(self, code, payload):
+        body = json.dumps(json_value(payload), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.response_started = True
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.close_connection = True
+
+    def read_request(self):
+        parts = urlsplit(self.path)
+        params = {k:v[-1] for k,v in parse_qs(parts.query).items()}
+        if self.command == "POST":
+            if self.headers.get("Transfer-Encoding"):
+                raise ValueError("不支持Transfer-Encoding")
+            length = integer(self.headers.get("Content-Length", "0"), "Content-Length", 1, 65536)
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError("请求正文不完整")
+            decoded = json.loads(body.decode("utf-8"))
+            if not isinstance(decoded, dict):
+                raise ValueError("JSON正文必须为对象")
+            if params:
+                raise ValueError("POST参数仅允许放入JSON正文")
+            params = decoded
+        return parts.path,params
+
+    def stream(self, params):
+        params = dict(params)
+        if "after_id" not in params and self.headers.get("Last-Event-ID"):
+            params["after_id"] = self.headers["Last-Event-ID"]
+        duration = number(params.get("max_seconds", 30), "max_seconds", 0.1, 300)
+        heartbeat = number(params.get("heartbeat", 5), "heartbeat", 0.1, 30)
+        params["timeout"] = 0
+        batch = events_after(params)
+        self.response_started = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        deadline = time.monotonic()+duration
+        while True:
+            if batch["history_truncated"]:
+                gap = {"stream_id":batch["stream_id"],"next_event_id":batch["next_event_id"],
+                       "message":"事件历史有缺口，请查询委托、成交、持仓及账本对账"}
+                self.wfile.write(("event: bridge_gap\ndata: "+json.dumps(gap, ensure_ascii=False)+"\n\n").encode("utf-8"))
+            for event in batch["data"]:
+                self.wfile.write(("id: {}\nevent: {}\ndata: {}\n\n".format(
+                    event["event_id"],event["event_type"],json.dumps(event, ensure_ascii=False))).encode("utf-8"))
+            checkpoint = {"stream_id":batch["stream_id"],"next_event_id":batch["next_event_id"]}
+            self.wfile.write(("event: bridge_cursor\ndata: "+json.dumps(checkpoint)+"\n\n: keepalive\n\n").encode("utf-8"))
+            self.wfile.flush()
+            remaining = deadline-time.monotonic()
+            if remaining <= 0 or not _running:
+                break
+            params.update(after_id=batch["next_event_id"],stream_id=batch["stream_id"],timeout=min(heartbeat,remaining))
+            batch = events_after(params)
+
+    def dispatch(self):
+        try:
+            self.close_connection = True
+            if BRIDGE_ACCESS_TOKEN and not hmac.compare_digest(
+                    self.headers.get("X-QMT-Bridge-Token", "").encode("utf-8"),BRIDGE_ACCESS_TOKEN.encode("utf-8")):
+                self.write_json(401, {"status":"error","message":"访问令牌无效"})
+                return
+            if self.command == "OPTIONS":
+                self.write_json(200, success())
+                return
+            path,params = self.read_request()
+            if path == "/trade/order" and self.command != "POST":
+                self.write_json(405, {"status":"error","message":"报单必须使用POST"})
+            elif path != "/trade/order" and self.command != "GET":
+                self.write_json(405, {"status":"error","message":"查询必须使用GET"})
+            elif path == "/health":
+                self.write_json(200, health())
+            elif path == "/events":
+                self.write_json(200, events_after(params))
+            elif path == "/events/stream":
+                self.stream(params)
+            elif path == "/trade/ledger":
+                self.write_json(200, ledger(params))
+            elif path == "/orders" and params.get("request_id"):
+                self.write_json(200, query_request(params))
+            elif path in ("/tick","/market","/history_data","/assets","/positions","/orders","/trades","/trade/order"):
+                self.write_json(200, call_qmt(path,params))
+            else:
+                self.write_json(404, {"status":"error","message":"接口不存在"})
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            self.close_connection = True
+        except Exception as exc:
+            if not self.response_started:
+                code = 400 if isinstance(exc, (ValueError,UnicodeError)) else 503
+                try:
+                    self.write_json(code, {"status":"error","message":safe_message(exc)})
+                except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+                    self.close_connection = True
+            else:
+                print("[qmt_bridge_standard] 响应开始后异常: "+safe_message(exc))
+                self.close_connection = True
+
+    do_GET = dispatch
+    do_POST = dispatch
+    do_OPTIONS = dispatch
+
+
+def start_server():
+    global _server,_server_thread
+    with _lifecycle_lock:
+        if _server is not None:
+            return
+        server = BridgeServer((BRIDGE_HOST,BRIDGE_PORT),BridgeHandler)
+        thread = threading.Thread(target=server.serve_forever, name="qmt_standard_http", daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            server.server_close()
+            raise
+        _server,_server_thread = server,thread
+        print("[qmt_bridge_standard] {} port={}".format(SOURCE_VERSION,server.server_address[1]))
+
+
+def init(ContextInfo):
+    global _running,_timer_registered,_stream_id,_sequence,_last_reconcile
+    global _timer_count,_last_timer_at,_last_callback_at,_last_callback_monotonic
+    with _lifecycle_lock:
+        if _running:
+            raise RuntimeError("模型已初始化，请先停止再启动")
+        accounts = configured_accounts()
+        if BRIDGE_HOST != "127.0.0.1":
+            raise ValueError("本版仅支持127.0.0.1本机监听")
+        initialize_database()
+        with callback_scope(ContextInfo):
+            for account in accounts.values():
+                ContextInfo.set_account(account)
+        _timer_registered = False
+        _last_reconcile = 0.0
+        _timer_count = 0
+        _last_timer_at = _last_callback_at = ""
+        _last_callback_monotonic = 0.0
+        with _event_condition:
+            _events.clear()
+            _sequence = 0
+            _stream_id = uuid.uuid4().hex
+        _running = True
+        # run_time按原生生命周期在init中注册；使用历史起点避免首次触发时刻错过。
+        try:
+            ContextInfo.run_time("qmt_timer_callback", "1nSecond", TIMER_START_TIME)
+            _timer_registered = True
+            print("[qmt_bridge_standard] init timer_registered=True accounts={} live={}".format(
+                list(accounts),BRIDGE_ALLOW_LIVE_ORDERS))
+        except Exception:
+            _running = False
+            raise
+
+
+def after_init(ContextInfo):
+    global _timer_registered
+    if not _running:
+        return
+    with _lifecycle_lock:
+        if not _timer_registered:
+            ContextInfo.run_time("qmt_timer_callback", "1nSecond", TIMER_START_TIME)
+            _timer_registered = True
+        start_server()
+
+
+def qmt_timer_callback(ContextInfo):
+    global _timer_count,_last_timer_at
+    if not _running:
+        return
+    _timer_count += 1
+    _last_timer_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if _timer_count == 1:
+        print("[qmt_bridge_standard] first_timer_callback " + _last_timer_at)
+    pump_context(ContextInfo)
+
+
+def pump_context(ContextInfo):
+    global _last_reconcile
+    global _last_callback_at,_last_callback_monotonic
+    if _running:
+        _last_callback_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _last_callback_monotonic = time.monotonic()
+        with callback_scope(ContextInfo):
+            drain_rpc()
+            if time.monotonic()-_last_reconcile >= RECONCILE_INTERVAL_SECONDS:
+                _last_reconcile = time.monotonic()
+                try:
+                    reconcile_trades()
+                except Exception as exc:
+                    publish("reconciliation", {"source":"query_reconciliation","status":"error",
+                                               "message":safe_message(exc)})
+
+
+def handlebar(ContextInfo):
+    pump_context(ContextInfo)
+
+
+def trade_callback(context, row, kind):
+    if not _running:
+        return
+    with callback_scope(context):
+        account = text_value(attr(row, "m_strAccountID", ""))
+        scope = next((k for k,v in configured_accounts().items() if v == account), None)
+        if scope is None:
+            return
+        data = normalize_detail(row,scope,kind)
+        if kind in ("order", "deal"):
+            try:
+                data.update(persist_callback(row,kind == "deal"))
+            except Exception as exc:
+                data.update(ledger_status="unresolved",ledger_message=safe_message(exc))
+        publish({"account":"account_status","position":"position_change",
+                 "order":"stock_order","deal":"stock_trade"}[kind],data)
+        drain_rpc()
+
+
+def account_callback(ContextInfo, accountInfo):
+    trade_callback(ContextInfo,accountInfo,"account")
+
+
+def position_callback(ContextInfo, positionInfo):
+    trade_callback(ContextInfo,positionInfo,"position")
+
+
+def order_callback(ContextInfo, orderInfo):
+    trade_callback(ContextInfo,orderInfo,"order")
+
+
+def deal_callback(ContextInfo, dealInfo):
+    trade_callback(ContextInfo,dealInfo,"deal")
+
+
+def orderError_callback(ContextInfo, orderArgs, errMsg):
+    """异常主推只记录事实，字段不足不猜测终态，不自动重试。"""
+    if not _running:
+        return
+    with callback_scope(ContextInfo):
+        # 官方PassorderArguments与Order/Deal字段不同，不能照搬m_strAccountID。
+        account = text_value(attr(orderArgs, "accountID", ""))
+        enabled = configured_accounts()
+        scope = next((key for key,value in enabled.items() if value == account), None)
+        if scope is None:
+            return
+        composite = text_value(attr(orderArgs, "strategyName", ""))
+        parts = re.split(r"_\s*&&&\s*_", composite, maxsplit=1)
+        # 仅识别明确的柜台备注；没有分隔符时保持未匹配，不能猜策略归属。
+        remark = parts[1] if len(parts) == 2 else ""
+        data = {"message":safe_message(errMsg),"request_id":"","routing_status":"unresolved"}
+        data["account_type"] = scope
+        if remark and DB_PATH:
+            try:
+                with database(True) as conn:
+                    route = conn.execute("SELECT * FROM bridge_requests WHERE broker_remark=?", (remark,)).fetchone()
+                    if (route and route["account_id"] == account
+                            and route["stock_code"] == text_value(attr(orderArgs, "orderCode", ""))
+                            and route["op_type"] == attr(orderArgs, "opType")
+                            and route["strategy_name"] == parts[0]):
+                        data.update(request_id=route["request_id"],account_type=route["account_type"],routing_status="matched")
+                        details = json.loads(route["result_json"])
+                        details["order_error"] = safe_message(errMsg)
+                        conn.execute("UPDATE bridge_requests SET result_json=? WHERE request_id=?",
+                                     (json.dumps(details, ensure_ascii=False),route["request_id"]))
+            except Exception as exc:
+                data["routing_message"] = safe_message(exc)
+        publish("order_error",data)
+        drain_rpc()
+
+
+def stop(ContextInfo):
+    global _server,_server_thread,_running,_context,_timer_registered
+    with _lifecycle_lock:
+        _running = False
+        with _event_condition:
+            _event_condition.notify_all()
+        if _server is not None:
+            _server.shutdown()
+            _server.server_close()
+            _server_thread.join(timeout=2.0)
+        _server = _server_thread = None
+        _context = None
+        _timer_registered = False
+        # 旧排队请求不得留到下一次init执行。
+        while True:
+            try:
+                task = _rpc_queue.get_nowait()
+            except queue.Empty:
+                break
+            with task["lock"]:
+                task["state"] = "done"
+                task["error"] = RuntimeError("模型已停止，排队请求未执行")
+                task["done"].set()
+            _rpc_queue.task_done()

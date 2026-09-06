@@ -1,0 +1,4 @@
+include requirements.txt
+include scripts/bump_version.py
+recursive-include docs *.md
+recursive-include yuhanbolh/qmt_bridge/templates *.tmpl
