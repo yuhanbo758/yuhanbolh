@@ -6,7 +6,7 @@ PROJECT_ROOT = Path(__file__).parent
 
 setup(
     name="yuhanbolh",
-    version="0.6.5",
+    version="0.6.6",
     packages=find_packages(include=["yuhanbolh", "yuhanbolh.*"]),
     package_data={"yuhanbolh.qmt_bridge": ["templates/*.tmpl"]},
     description="量化投资，数据获取和处理",
