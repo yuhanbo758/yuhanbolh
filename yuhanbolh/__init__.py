@@ -7,6 +7,16 @@
 from importlib import import_module
 
 _MODULE_EXPORTS = {
+    "wencai": {
+        "get_wencai",
+        "WencaiError",
+        "get_clean_data",
+        "get_satisfy_redemption",
+        "wencai_conditional_query",
+        "wencai_conditional_query_nz100",
+    },
+    "akshare_data": {"akshare_convertible_bond", "filter_bond_cb_redeem_data_and_save_to_db"},
+    "qmt_bridge": {"BridgeClient", "BridgeError", "export_qmt_bridge"},
     "create_strategy": {
         "get_filtered_data",
         "mole_hunting_delegation",
@@ -14,18 +24,12 @@ _MODULE_EXPORTS = {
     },
     "edit_akshare": {"bond_cov_comparison", "stock_zh_a_spot_em"},
     "get_data": {
-        "akshare_convertible_bond",
-        "akshare_index_analysis",
         "download_7_years_data",
-        "filter_bond_cb_redeem_data_and_save_to_db",
-        "get_clean_data",
         "get_exchange_rate",
         "get_finance_info",
         "get_financial_data",
         "get_history_minute_time_data",
         "get_index_bars",
-        "get_pywencai",
-        "get_satisfy_redemption",
         "get_security_bars",
         "get_security_count",
         "get_security_quotes",
@@ -33,7 +37,6 @@ _MODULE_EXPORTS = {
         "get_tdx_market_address",
         "get_transaction_data",
         "get_valuation_ratios",
-        "index_value_name_funddb",
         "json_to_dfcf",
         "json_to_dfcf_qmt",
         "json_to_dfcf_qmt_jyr",
@@ -42,7 +45,6 @@ _MODULE_EXPORTS = {
         "qmt_data_source_download",
         "query_stock_data",
         "stock_info_global_em",
-        "wencai_conditional_query",
     },
     "global_functions": {
         "add_account",
@@ -91,7 +93,6 @@ _MODULE_EXPORTS = {
         "ichimoku_cloud_zb",
         "linear_regression_dfcf_zb",
         "save_exchange_rates_to_db",
-        "wencai_conditional_query_nz100",
     },
     "mt5_trade": {
         "cancel_order_fn",
@@ -184,6 +185,11 @@ def __dir__():
 
 # 定义公共API
 __all__ = [
+    "get_wencai",
+    "WencaiError",
+    "BridgeClient",
+    "BridgeError",
+    "export_qmt_bridge",
     # 策略文件
     "get_filtered_data",
     "process_and_merge_data",
@@ -192,7 +198,6 @@ __all__ = [
     # 获取金融数据文件
     "get_tdx_market_address",
     "get_financial_data",
-    "index_value_name_funddb",
     "get_security_quotes",
     "get_security_bars",
     "get_security_count",
@@ -207,8 +212,6 @@ __all__ = [
     "qmt_data_source",
     "download_7_years_data",
     "qmt_data_source_download",
-    "akshare_index_analysis",
-    "get_pywencai",
     "akshare_convertible_bond",
     "get_satisfy_redemption",
     "wencai_conditional_query",

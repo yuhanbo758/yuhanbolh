@@ -1,0 +1,30 @@
+> yuhanbolh 导出说明：qmt_bridge_server.py 已转换为 GBK，可作为大QMT部署副本；其余文件为 UTF-8。修改服务端请保持 GBK。此包不附任何实际运行验收报告。
+
+# 配置与部署
+
+服务端仅为 `qmt_bridge_server.py` 一个文件，通过大QMT生命周期运行，不能用外部Python直接启动代替原生环境。客户端不加载服务端模块。
+
+服务端默认合同：端口1693，无备用端口；普通、信用账户均未启用，账号字符串为空；`DB_PATH` 为空；真实下单关闭。使用者按服务端顶部注释填写配置，仅启用需要的账户。数据库应指向用户明确选择、父目录已存在的SQLite文件；不要套用其他项目的业务库。空数据库路径不是已配置成交账本。
+
+配置名为 `ENABLE_NORMAL_ACCOUNT`、`ENABLE_CREDIT_ACCOUNT`、`NORMAL_ACCOUNT_ID`、`CREDIT_ACCOUNT_ID`、`DB_PATH`、`BRIDGE_HOST`、`BRIDGE_PORT`、`BRIDGE_ACCESS_TOKEN`、`BRIDGE_ALLOW_LIVE_ORDERS`。纯行情可保持两账户关闭且DB_PATH留空；启用账户查询/回推须先填写账号，真实下单还须配置独立库和开关。不读取环境变量或临时授权标记。
+
+服务端与客户端令牌必须一致。本版服务端仅允许127.0.0.1本机监听；没有公网部署功能。客户端不会跟随HTTP重定向。
+
+1. 导出的服务端已经是GBK字节；使用GBK编码编辑配置并保存，保留首行GBK声明。
+2. 运行静态校验，核对报告每个源码SHA256和Python版本。Python 3.6实际解释器生成 `validation_py36.json`，其他版本产生各自的版本文件名。
+3. 需要部署副本时，显式指定尚不存在的目标文件。校验成功后工具才生成GBK字节副本；不覆盖任何已有目标。命令仅生成文件，不启动或重新加载大QMT。
+4. 在大QMT中加载GBK副本，查看初始化和监听结果。端口1693占用时解决冲突，不期待自动改端口。
+5. 在获准访问实际服务后，检查 `/health` 的产品、API版本、能力与 `rpc_ready`，并观察timer_count是否持续增加。磁盘源码更新不等于运行进程已重新加载。
+
+```powershell
+python .\validate_source.py
+# 仅在明确需要生成部署副本时执行；先创建专用目标目录。
+python .\validate_source.py --deploy-output .\deployment\qmt_bridge_server.py
+```
+
+不使用原生解释器时，AST的3.6语法模式不能证明原生库导入或柜台环境可用。`pythonw` 可能先返回，应等待报告更新时间变化并核对当前源码哈希，不能以没有控制台输出判断通过。
+
+客户端默认75秒超时，大于服务端60秒RPC等待；长轮询和SSE按等待参数额外增加余量。超时后的真实订单可能已经开始执行，应先对账，不能换请求号重报。
+
+standard.2在init内通过run_time注册每秒定时器，TIMER_START_TIME采用历史起点。日志应依次出现timer_registered及first_timer_callback；只有前者而无后者时，检查模型是否真正运行。更新文件前停止该模型，重新打开磁盘副本后运行，避免旧编辑缓冲区覆盖更新。
+

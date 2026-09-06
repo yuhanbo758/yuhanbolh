@@ -1,0 +1,1015 @@
+# -*- coding: utf-8 -*-
+"""标准桥接隔离回归：仅加载同目录源码；绝不访问部署模型或正式数据库。
+
+运行：python -B -m unittest discover -s qmt_bridge_standard -p test_server.py -v
+所有网络监听均为127.0.0.1:0；passorder始终被Mock截获。
+"""
+import datetime as dt
+import http.client
+import io
+import json
+import pathlib
+import queue
+import sqlite3
+import threading
+import types
+import unittest
+from collections import deque
+from tempfile import TemporaryDirectory
+from unittest import mock
+
+SOURCE = pathlib.Path(__file__).with_name('qmt_bridge_server.py')
+
+
+def load_server():
+    # 导出服务端为GBK；仅规范内存首行，不改部署文件。
+    source = SOURCE.read_text(encoding='gbk').splitlines(True)
+    source[0] = '# -*- coding: utf-8 -*-\n'
+    module = types.ModuleType('isolated_standard_server')
+    module.__file__ = str(SOURCE)
+    exec(compile(''.join(source), str(SOURCE), 'exec'), module.__dict__)
+    return module
+
+
+class FrozenDatetime(dt.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 9, 4, 10, 0, 0, tzinfo=tz)
+
+
+class FakeFrame:
+    def iterrows(self):
+        return iter([('20260903', {'close': 12.5, 'volume': 100, 'open': float('nan')})])
+
+
+class FakeContext:
+    def __init__(self):
+        self.set_account = mock.Mock()
+        self.run_time = mock.Mock()
+        self.get_trading_dates = mock.Mock(side_effect=lambda code, start, end, count, period: [start])
+        self.get_full_tick = mock.Mock(return_value={'000001.SZ': {'lastPrice': 12.5}})
+        self.get_market_data_ex = mock.Mock(return_value={'000001.SZ': FakeFrame()})
+        self.account = 'FAKE_STALE_DISABLED_ACCOUNT'
+
+
+class ServerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory(prefix='qmt_standard_unittest_')
+        self.addCleanup(self.tmp.cleanup)
+        self.s = load_server()
+        self.s.datetime = FrozenDatetime
+        self.s.BRIDGE_HOST, self.s.BRIDGE_PORT = '127.0.0.1', 0
+        self.s.NORMAL_ACCOUNT_ID = 'FAKE_NORMAL'
+        self.s.CREDIT_ACCOUNT_ID = 'FAKE_CREDIT'
+        self.s.ENABLE_NORMAL_ACCOUNT = self.s.ENABLE_CREDIT_ACCOUNT = True
+        self.s.DB_PATH = str(pathlib.Path(self.tmp.name) / 'isolated.sqlite3')
+        self.s.BRIDGE_ALLOW_LIVE_ORDERS = True
+        self.s.passorder = mock.Mock(return_value=0)
+        self.s.get_trade_detail_data = mock.Mock(return_value=[])
+        self.ctx = FakeContext()
+        self.s.init(self.ctx)
+        self.addCleanup(self.s.stop, self.ctx)
+
+    def invoke(self, function, *args, **kwargs):
+        with self.s.callback_scope(self.ctx):
+            return function(*args, **kwargs)
+
+    def test_timer_registered_in_init_with_historical_start_and_live_heartbeat(self):
+        self.ctx.run_time.assert_called_once_with('qmt_timer_callback','1nSecond',self.s.TIMER_START_TIME)
+        self.assertLess(dt.datetime.strptime(self.s.TIMER_START_TIME,'%Y-%m-%d %H:%M:%S'),FrozenDatetime.now())
+        self.assertFalse(self.s.health()['rpc_ready'])
+        self.s.handlebar(self.ctx)
+        self.assertEqual(self.s.health()['timer_count'],0)
+        self.s.qmt_timer_callback(self.ctx)
+        self.assertTrue(self.s.health()['rpc_ready'])
+        self.assertEqual(self.s.health()['timer_count'],1)
+        self.assertEqual(self.s.health()['last_timer_at'],'2026-09-04 10:00:00')
+        with mock.patch.object(self.s,'start_server'):
+            self.s.after_init(self.ctx)
+        self.ctx.run_time.assert_called_once()
+
+    def params(self, **changes):
+        value = dict(account_type='normal', stock_code='000001.SZ', action='BUY',
+                     price=12.5, volume=100, strategy_name='fake_strategy',
+                     user_order_id='fake_request', dry_run=False, confirm_live_order='LIVE_ORDER')
+        value.update(changes)
+        return value
+
+    def submit(self, **changes):
+        return self.invoke(self.s.submit_order, self.params(**changes))['data']
+
+    def sql(self, statement, args=()):
+        # 显式关闭连接，保证Windows临时目录清理不受SQLite句柄影响。
+        with self.s.database(True) as conn:
+            return [dict(row) for row in conn.execute(statement, args).fetchall()]
+
+    def route(self, request='fake_request'):
+        return self.sql('SELECT * FROM bridge_requests WHERE request_id=?', (request,))[0]
+
+    def deal(self, route=None, **changes):
+        r = route or self.route()
+        value = dict(m_strAccountID=r['account_id'], m_strInstrumentID='000001',
+                     m_strExchangeID='SZ', m_strOrderSysID='FAKE_ORDER', m_strTradeID='FAKE_DEAL',
+                     m_strTradeDate=r['trade_date'], m_strTradeTime='10:00:01',
+                     m_strRemark=r['broker_remark'], m_nOffsetFlag=48 if r['action']=='BUY' else 49,
+                     m_nDirection=48, m_nVolume=40, m_dPrice=12.5, m_dTradeAmount=500.0)
+        value.update(changes)
+        return types.SimpleNamespace(**value)
+
+    def order(self, route=None, **changes):
+        r = route or self.route()
+        value = vars(self.deal(r)).copy()
+        value.pop('m_strTradeDate')
+        value.update(m_strInsertDate=r['trade_date'], m_strInsertTime='10:00:00',
+                     m_nVolumeTotalOriginal=r['volume'], m_nVolumeTraded=0,
+                     m_dLimitPrice=12.5, m_nOrderStatus=50)
+        value.update(changes)
+        return types.SimpleNamespace(**value)
+
+    def persist(self, row, deal=True):
+        return self.invoke(self.s.persist_callback, row, deal)
+
+    def test_import_has_no_database_network_or_thread_side_effects(self):
+        with mock.patch('sqlite3.connect', side_effect=AssertionError('database on import')), \
+                mock.patch('socket.socket', side_effect=AssertionError('socket on import')), \
+                mock.patch('threading.Thread.start', side_effect=AssertionError('thread on import')):
+            s = load_server()
+        self.assertFalse(s._running)
+        self.assertIsNone(s._server)
+
+    def assert_database_rejected_unchanged(self, path):
+        """同时检查初始化及运行期打开路径；拒绝不应修改任何已有数据库字节。"""
+        self.s.stop(self.ctx)
+        self.s.DB_PATH = str(path)
+        before = path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.s.init(self.ctx)
+        self.assertFalse(self.s._running)
+        self.assertEqual(path.read_bytes(),before)
+        for write in (False,True):
+            with self.subTest(write=write), self.assertRaises((ValueError,sqlite3.DatabaseError)):
+                with self.s.database(write):
+                    self.fail('incompatible database opened')
+            self.assertEqual(path.read_bytes(),before)
+
+    def schema_fixture(self, name, statements):
+        """从本测试创建的空专用库复制结构，再注入不兼容结构；不读取项目业务库。"""
+        path = pathlib.Path(self.tmp.name) / (name+'.sqlite3')
+        path.write_bytes(self.valid_schema_bytes)
+        conn = sqlite3.connect(str(path))
+        try:
+            for statement in statements:
+                conn.execute(statement)
+            conn.commit()
+        finally:
+            conn.close()
+        return path
+
+    def test_missing_source_and_legacy_shape_rejected_unchanged(self):
+        self.valid_schema_bytes = pathlib.Path(self.s.DB_PATH).read_bytes()
+        # 采用重建表而非SQLite新版DROP COLUMN，保持测试兼容旧SQLite运行库。
+        for name,columns in (('missing_source','account_id,trade_date,deal_id,request_id,order_id,price,volume,trade_amount,trade_time'),
+                             ('legacy_deals','account_id,deal_id,request_id,volume')):
+            with self.subTest(schema=name):
+                path = self.schema_fixture(name,[
+                    'ALTER TABLE bridge_deals RENAME TO fake_old_deals',
+                    'CREATE TABLE bridge_deals AS SELECT '+columns+' FROM fake_old_deals',
+                    'DROP TABLE fake_old_deals'])
+                self.assert_database_rejected_unchanged(path)
+
+    def test_missing_or_incompatible_unique_partial_index_rejected_unchanged(self):
+        self.valid_schema_bytes = pathlib.Path(self.s.DB_PATH).read_bytes()
+        variants = {
+            'missing':[],
+            'not_unique':["CREATE INDEX broker_order_key ON bridge_requests(account_id,trade_date,order_id) WHERE order_id!=''"],
+            'not_partial':['CREATE UNIQUE INDEX broker_order_key ON bridge_requests(account_id,trade_date,order_id)'],
+            'wrong_columns':["CREATE UNIQUE INDEX broker_order_key ON bridge_requests(account_id,order_id) WHERE order_id!=''"]}
+        for name,statements in variants.items():
+            with self.subTest(index=name):
+                path = self.schema_fixture(name,['DROP INDEX broker_order_key']+statements)
+                self.assert_database_rejected_unchanged(path)
+
+    def test_all_table_column_contracts_rejected_unchanged(self):
+        self.valid_schema_bytes = pathlib.Path(self.s.DB_PATH).read_bytes()
+        for table in ('bridge_meta','bridge_requests','bridge_deals'):
+            with self.subTest(table=table):
+                path = self.schema_fixture(table,['ALTER TABLE '+table+' ADD COLUMN fake_extra TEXT'])
+                self.assert_database_rejected_unchanged(path)
+
+    def test_foreign_database_and_wrong_product_rejected_without_changes(self):
+        self.valid_schema_bytes = pathlib.Path(self.s.DB_PATH).read_bytes()
+        path = pathlib.Path(self.tmp.name) / 'foreign.sqlite3'
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute('CREATE TABLE fake_external_data(value TEXT)')
+            conn.execute("INSERT INTO fake_external_data VALUES ('FAKE_KEEP_CONTENT')")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assert_database_rejected_unchanged(path)
+        path = self.schema_fixture('wrong_product',["UPDATE bridge_meta SET product='FAKE_FOREIGN_PRODUCT'"])
+        self.assert_database_rejected_unchanged(path)
+
+    def test_pure_data_blank_database_never_connects_sqlite(self):
+        self.s.stop(self.ctx)
+        self.s.DB_PATH = ''
+        self.s.BRIDGE_ALLOW_LIVE_ORDERS = False
+        self.s.ENABLE_NORMAL_ACCOUNT = self.s.ENABLE_CREDIT_ACCOUNT = False
+        with mock.patch.object(self.s.sqlite3,'connect',side_effect=AssertionError('pure data opened SQLite')):
+            self.s.init(self.ctx)
+            self.assertEqual(self.invoke(self.s.market,{'stock_code':'000001.SZ'})['status'],'success')
+            self.s.qmt_timer_callback(self.ctx)
+            self.invoke(self.s.reconcile_trades)
+            self.assertEqual(self.s.health()['ledger_configured'],False)
+        self.s.passorder.assert_not_called()
+        self.s.get_trade_detail_data.assert_not_called()
+
+    def test_market_exact_native_parameters_and_json(self):
+        args = dict(stock_code='000001.sz', fields='time, close,open', period='5m', count='2',
+                    start_time='20260901', end_time='20260903', dividend_type='front', fill_data='false')
+        result = self.invoke(self.s.market, args, True)
+        self.ctx.get_market_data_ex.assert_called_once_with(fields=['time','close','open'],
+            stock_code=['000001.SZ'], period='5m', count=2, start_time='20260901',
+            end_time='20260903', dividend_type='front', fill_data=False, subscribe=False)
+        self.assertEqual(result['data'], [dict(time='20260903', close=12.5, open=None)])
+        self.assertEqual(self.invoke(self.s.market, {'stock_code':'000001.SZ'})['data']['lastPrice'],12.5)
+
+    def test_market_rejects_invalid_parameters(self):
+        for change in ({'stock_code':'bad'}, {'fields':42}, {'fields':[1]}, {'count':0},
+                       {'count':10001}, {'count':True}, {'subscribe':True}, {'fill_data':'yes'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.invoke(self.s.market, dict(stock_code='000001.SZ', **change) if 'stock_code' not in change else change, True)
+        self.ctx.get_market_data_ex.assert_not_called()
+
+    def test_native_thread_affinity_and_nested_scope(self):
+        with self.assertRaises(RuntimeError):
+            self.s.market({'stock_code':'000001.SZ'})
+        errors = []
+        def worker():
+            try:
+                self.s.market({'stock_code':'000001.SZ'})
+            except Exception as exc:
+                errors.append(exc)
+        with self.s.callback_scope(self.ctx):
+            with self.s.callback_scope(self.ctx):
+                self.s.require_qmt_thread()
+            t = threading.Thread(target=worker)
+            t.start(); t.join(1)
+            self.assertFalse(t.is_alive())
+            self.s.require_qmt_thread()
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
+        self.ctx.get_full_tick.assert_not_called()
+
+    def test_account_switches_and_configuration(self):
+        self.assertEqual(self.s.account_specs('all'), [('normal','FAKE_NORMAL','stock'),('credit','FAKE_CREDIT','credit')])
+        self.s.ENABLE_NORMAL_ACCOUNT = False
+        self.assertEqual(self.s.account_specs('all'), [('credit','FAKE_CREDIT','credit')])
+        with self.assertRaises(ValueError): self.submit()
+        self.s.ENABLE_CREDIT_ACCOUNT = False
+        self.assertEqual(self.s.configured_accounts(), {})
+        self.s.ENABLE_NORMAL_ACCOUNT = True
+        for account in ('', ' ', 123):
+            with self.subTest(account=account), mock.patch.object(self.s,'NORMAL_ACCOUNT_ID',account), self.assertRaises(ValueError):
+                self.s.configured_accounts()
+        self.s.ENABLE_CREDIT_ACCOUNT = True
+        self.s.CREDIT_ACCOUNT_ID = 'FAKE_NORMAL'
+        with self.assertRaises(ValueError): self.s.configured_accounts()
+
+    def test_account_queries_route_and_hide_account(self):
+        self.s.get_trade_detail_data.return_value = [types.SimpleNamespace(m_strAccountID='FAKE_NORMAL',m_dAvailable=10)]
+        result = self.invoke(self.s.execute_rpc, '/assets', {'account_type':'all'})
+        self.assertEqual(self.s.get_trade_detail_data.call_args_list,
+            [mock.call('FAKE_NORMAL','stock','account'),mock.call('FAKE_CREDIT','credit','account')])
+        self.assertNotIn('FAKE_NORMAL', json.dumps(result))
+        for path, kind in [('/positions','position'),('/orders','order'),('/trades','deal')]:
+            self.invoke(self.s.execute_rpc,path,{'account_type':'credit'})
+            self.s.get_trade_detail_data.assert_called_with('FAKE_CREDIT','credit',kind)
+
+    def test_dry_run_does_not_even_connect_to_database(self):
+        with mock.patch.object(self.s.sqlite3,'connect',side_effect=AssertionError('dry-run DB write/read')):
+            for dry in (True, 'true', None):
+                result = self.submit(dry_run=dry)
+                self.assertEqual(result['submission_state'], 'dry_run')
+                self.assertNotIn('account_id',result)
+        self.s.passorder.assert_not_called()
+        self.ctx.get_trading_dates.assert_not_called()
+        self.assertEqual(self.sql('SELECT * FROM bridge_requests'), [])
+
+    def test_all_operation_routes_and_exact_passorder_signature(self):
+        expected = [('normal',23,'BUY'),('normal',24,'SELL'),('credit',27,'BUY'),
+                    ('credit',28,'SELL'),('credit',29,'BUY'),('credit',31,'SELL'),
+                    ('credit',33,'BUY'),('credit',34,'SELL')]
+        for scope, op, action in expected:
+            with self.subTest(scope=scope,op=op):
+                result = self.submit(account_type=scope,op_type=op,action=action,
+                    user_order_id='fake_req_'+str(op),strategy_name='fake_'+str(op))
+                self.s.passorder.assert_called_with(op,1101,'FAKE_'+scope.upper(),'000001.SZ',
+                    11,12.5,100,'fake_'+str(op),2,result['broker_remark'],self.ctx)
+                self.assertEqual(result['submission_state'],'passorder_called')
+                self.assertEqual(len(result['broker_remark'].encode('gbk')),20)
+        self.assertEqual(self.s.passorder.call_count,8)
+        self.assertEqual(self.sql('SELECT * FROM bridge_deals'),[])
+
+    def test_order_parameter_validation(self):
+        cases = [dict(account_type='all'),dict(account_type='bad'),dict(account_type='credit'),
+            dict(op_type=27),dict(op_type=24),dict(action='HOLD'),dict(volume=0),dict(volume=-1),
+            dict(volume=True),dict(volume='1.0'),dict(price=0),dict(price=float('nan')),
+            dict(price=float('inf')),dict(price=True),dict(stock_code='123'),dict(strategy_name=''),
+            dict(strategy_name='中'*11),dict(strategy_name='a\nb'),dict(strategy_name='😀'),
+            dict(user_order_id=''),dict(user_order_id='x'*129),dict(user_order_id='a\nb'),
+            dict(order_remark='forbidden'),dict(dry_run='maybe'),dict(confirm_live_order='wrong')]
+        cases += [dict(account_type='credit',op_type=op) for op in (23,24,30,32,99)]
+        for changes in cases:
+            with self.subTest(changes=changes), self.assertRaises(ValueError): self.submit(**changes)
+        self.s.passorder.assert_not_called()
+        self.assertEqual(self.sql('SELECT * FROM bridge_requests'),[])
+
+    def test_real_trading_session_gate_and_fake_calendar(self):
+        self.assertEqual(self.invoke(self.s.trading_session),'20260904')
+        self.ctx.get_trading_dates.assert_called_with('000001.SH','20260904','20260904',1,'1d')
+        for now in (dt.datetime(2026,9,5,10),dt.datetime(2026,9,4,9,29),dt.datetime(2026,9,4,11,30),
+                    dt.datetime(2026,9,4,12),dt.datetime(2026,9,4,14,57)):
+            with self.subTest(now=now), self.assertRaises(ValueError): self.invoke(self.s.trading_session,now)
+        self.ctx.get_trading_dates.return_value = []
+        self.ctx.get_trading_dates.side_effect = None
+        with self.assertRaises(ValueError): self.submit()
+        self.ctx.get_trading_dates.side_effect = RuntimeError('fake calendar unavailable')
+        with self.assertRaises(RuntimeError): self.submit()
+        self.s.passorder.assert_not_called()
+
+    def test_live_switch_required(self):
+        self.s.BRIDGE_ALLOW_LIVE_ORDERS = False
+        with self.assertRaises(ValueError): self.submit()
+        self.s.passorder.assert_not_called()
+
+    def test_idempotency_changed_parameters_and_restart(self):
+        first = self.submit()
+        self.assertTrue(self.submit()['duplicate_request'])
+        for change in (dict(price=13),dict(volume=101),dict(strategy_name='other'),dict(action='SELL')):
+            with self.subTest(change=change),self.assertRaises(ValueError): self.submit(**change)
+        self.s.stop(self.ctx)
+        self.s.init(self.ctx)
+        second = self.submit()
+        self.assertEqual(first['broker_remark'],second['broker_remark'])
+        self.assertTrue(second['duplicate_request'])
+        self.s.passorder.assert_called_once()
+
+    def test_unknown_submission_no_automatic_repeat(self):
+        self.s.passorder.side_effect = RuntimeError('FAKE_NORMAL failed')
+        first = self.submit()
+        self.assertEqual(first['submission_state'],'unknown')
+        self.assertNotIn('FAKE_NORMAL',json.dumps(first))
+        self.assertTrue(self.submit()['duplicate_request'])
+        with self.assertRaises(ValueError): self.submit(user_order_id='new_request')
+        self.s.passorder.assert_called_once()
+
+    def test_negative_submission_is_rejected_but_zero_is_not_fill(self):
+        self.s.passorder.return_value = -1
+        self.assertEqual(self.submit()['submission_state'],'rejected')
+        self.s.passorder.return_value = 0
+        self.assertEqual(self.submit(user_order_id='new_request')['submission_state'],'passorder_called')
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_partial_duplicate_conflicting_and_excess_deals(self):
+        self.submit()
+        row = self.deal()
+        self.assertEqual(self.persist(row)['ledger_status'],'written')
+        self.assertEqual(self.persist(row)['ledger_status'],'duplicate')
+        with self.assertRaises(ValueError): self.persist(self.deal(m_nVolume=41))
+        with self.assertRaises(ValueError): self.persist(self.deal(m_strTradeID='FAKE_EXCESS',m_nVolume=61))
+        self.persist(self.deal(m_strTradeID='FAKE_DEAL_2',m_nVolume=60))
+        self.assertEqual(self.route()['remaining'],0)
+        self.assertEqual(len(self.s.ledger({})['data']),2)
+
+    def test_account_date_trade_id_composite_deduplication(self):
+        self.submit()
+        self.persist(self.deal())
+        self.submit(account_type='credit',op_type=27,user_order_id='fake_credit')
+        self.persist(self.deal(self.route('fake_credit')))
+        # 第二交易日通过更换冻结datetime类推进，保留真实门禁和日历调用。
+        class NextDay(FrozenDatetime):
+            @classmethod
+            def now(cls,tz=None): return cls(2026,9,7,10,tzinfo=tz)
+        self.persist(self.order(m_nOrderStatus=54),False)
+        self.s.datetime = NextDay
+        self.submit(user_order_id='fake_next_day')
+        row = self.deal(self.route('fake_next_day'))
+        self.persist(row)
+        self.assertEqual(self.persist(row)['ledger_status'],'duplicate')
+        self.assertEqual(len(self.s.ledger({})['data']),3)
+        self.assertEqual(len(self.s.ledger({'account_type':'credit'})['data']),1)
+
+    def test_callback_identity_rejects_missing_or_wrong_fields(self):
+        self.submit()
+        for change in (dict(m_strAccountID='FAKE_OTHER'),dict(m_strTradeDate=''),
+                       dict(m_nOffsetFlag=0),dict(m_strOrderSysID=''),dict(m_strTradeID=''),
+                       dict(m_strTradeDate='20260903'),dict(m_nOffsetFlag=49)):
+            with self.subTest(change=change),self.assertRaises(ValueError): self.persist(self.deal(**change))
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_blank_remark_unique_and_ambiguous(self):
+        self.submit()
+        self.persist(self.order(),False)
+        self.persist(self.deal(m_strRemark=''))
+        self.assertEqual(self.route()['remaining'],60)
+        self.submit(user_order_id='fake_b',strategy_name='fake_b')
+        self.submit(user_order_id='fake_c',strategy_name='fake_c')
+        with self.assertRaises(ValueError):
+            self.persist(self.deal(m_strRemark='',m_strOrderSysID='FAKE_UNBOUND',m_strTradeID='FAKE_NEW'))
+        self.assertEqual(len(self.s.ledger({})['data']),1)
+
+    def test_initial_blank_remark_rejected_even_unique(self):
+        self.submit()
+        before = self.route()
+        for row,is_deal in ((self.deal(m_strRemark=''),True),(self.order(m_strRemark=''),False)):
+            with self.subTest(is_deal=is_deal),self.assertRaises(ValueError):
+                self.persist(row,is_deal)
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_sqlite_abort_rolls_back_deal_binding_and_remaining(self):
+        self.submit()
+        before = self.route()
+        self.sql("CREATE TRIGGER fake_abort BEFORE UPDATE OF remaining ON bridge_requests BEGIN SELECT RAISE(ABORT,'fake abort'); END")
+        with self.assertRaises(sqlite3.IntegrityError): self.persist(self.deal())
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+        self.sql('DROP TRIGGER fake_abort')
+        self.assertEqual(self.persist(self.deal())['ledger_status'],'written')
+        self.assertEqual(self.route()['remaining'],60)
+
+    def test_synchronous_callback_before_passorder_return(self):
+        def intercept(*args):
+            self.assertEqual(self.route()['submission_state'],'submitting')
+            self.s.deal_callback(self.ctx,self.deal())
+            return 0
+        self.s.passorder.side_effect = intercept
+        result = self.submit()
+        self.assertEqual(result['remaining'],60)
+        self.assertEqual(result['order_id'],'FAKE_ORDER')
+        self.assertEqual(self.s._events[-1]['data']['ledger_status'],'written')
+        self.s.passorder.assert_called_once()
+
+    def test_complete_order_is_not_a_deal_and_native_insert_date(self):
+        self.submit(action='SELL')
+        row = self.order(m_nOrderStatus=56,m_nVolumeTraded=100)
+        self.assertEqual(row.m_nOffsetFlag,49)
+        self.assertEqual(row.m_nDirection,48)
+        self.persist(row,False)
+        self.assertEqual(self.route()['remaining'],100)
+        self.assertEqual(self.route()['order_status'],56)
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_cancelled_order_accepts_late_deal_and_keeps_terminal_state(self):
+        self.submit()
+        self.persist(self.order(m_nOrderStatus=54),False)
+        self.persist(self.order(m_nOrderStatus=50),False)
+        self.persist(self.deal())
+        self.assertEqual(self.route()['order_status'],54)
+        self.assertEqual(self.route()['remaining'],60)
+
+    def test_callback_publishes_unresolved_without_false_ledger(self):
+        self.submit()
+        self.s.deal_callback(self.ctx,self.deal(m_strRemark='FAKE_UNKNOWN'))
+        self.assertEqual(self.s._events[-1]['data']['ledger_status'],'unresolved')
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_expired_queue_never_executes(self):
+        self.s.RPC_TIMEOUT_SECONDS = 0
+        with self.assertRaises(TimeoutError): self.s.call_qmt('/trade/order',self.params())
+        self.invoke(self.s.drain_rpc)
+        self.s.passorder.assert_not_called()
+        self.assertEqual(self.s._rpc_queue.unfinished_tasks,0)
+
+    def test_running_timeout_no_repeat(self):
+        # 注入只控制等待的Event，使“已running但客户端超时”不依赖操作系统调度速度。
+        entered, release, enqueued = threading.Event(), threading.Event(), threading.Event()
+        class ClientDone:
+            def wait(inner, timeout):
+                if not entered.wait(1): raise AssertionError('native call did not start')
+                return False
+            def set(inner): pass
+        real_queue = self.s._rpc_queue
+        original_put = real_queue.put_nowait
+        def put(task):
+            task['done'] = ClientDone()
+            original_put(task)
+            enqueued.set()
+        errors = []
+        def client():
+            try: self.s.call_qmt('/trade/order',self.params())
+            except Exception as exc: errors.append(exc)
+            finally: release.set()
+        def intercept(*args):
+            entered.set()
+            if not release.wait(1): raise AssertionError('client did not time out')
+            return 0
+        self.s.passorder.side_effect = intercept
+        with mock.patch.object(real_queue,'put_nowait',side_effect=put):
+            t = threading.Thread(target=client,daemon=True)
+            t.start()
+            self.assertTrue(enqueued.wait(1))
+            self.invoke(self.s.drain_rpc)
+            t.join(1)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(errors),1)
+        self.assertIsInstance(errors[0],TimeoutError)
+        self.assertIn('执行中',str(errors[0]))
+        self.assertTrue(self.submit()['duplicate_request'])
+        self.s.passorder.assert_called_once()
+
+    def test_rpc_native_work_runs_on_draining_callback_thread(self):
+        enqueued = threading.Event()
+        result, errors, native_threads = [], [], []
+        original = self.s._rpc_queue.put_nowait
+        def put(task):
+            original(task)
+            enqueued.set()
+        def tick(codes):
+            native_threads.append(threading.get_ident())
+            return {'000001.SZ': {'lastPrice':12.5}}
+        def client():
+            try: result.append(self.s.call_qmt('/tick',{'stock_code':'000001.SZ'}))
+            except Exception as exc: errors.append(exc)
+        self.ctx.get_full_tick.side_effect = tick
+        self.s.RPC_TIMEOUT_SECONDS = 1
+        with mock.patch.object(self.s._rpc_queue,'put_nowait',side_effect=put):
+            t = threading.Thread(target=client,daemon=True)
+            t.start()
+            self.assertTrue(enqueued.wait(1))
+            self.ctx.get_full_tick.assert_not_called()
+            self.invoke(self.s.drain_rpc)
+            t.join(1)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(errors,[])
+        self.assertEqual(native_threads,[threading.get_ident()])
+        self.assertNotEqual(native_threads[0],t.ident)
+        self.assertEqual(result[0]['data']['lastPrice'],12.5)
+
+    def test_synchronous_callback_drain_cannot_reenter_active_rpc(self):
+        native_calls = []
+        def intercept(*args):
+            native_calls.append(args[7])
+            self.s.deal_callback(self.ctx,self.deal(self.route(args[7]),m_strOrderSysID='FAKE_ORDER_'+args[7]))
+            self.assertEqual(len(native_calls),1 if args[7]=='fake_a' else 2)
+            return 0
+        # 通过真实队列排空进入passorder，确保同步回调内部drain受到非重入锁保护。
+        tasks = []
+        for name in ('fake_a','fake_b'):
+            task = dict(path='/trade/order',params=self.params(user_order_id=name,strategy_name=name),
+                        deadline=float('inf'),state='queued',lock=threading.Lock(),done=threading.Event())
+            tasks.append(task)
+            self.s._rpc_queue.put_nowait(task)
+        self.s.passorder.side_effect = intercept
+        self.invoke(self.s.drain_rpc)
+        self.assertEqual(native_calls,['fake_a','fake_b'])
+        for task in tasks:
+            self.assertNotIn('error',task)
+            self.assertEqual(task['result']['data']['submission_state'],'passorder_called')
+        self.assertEqual(self.s._rpc_queue.unfinished_tasks,0)
+
+    def test_reconciliation_recovers_bound_deals_with_explicit_origin(self):
+        self.submit()
+        order = self.order(m_nOrderStatus=56,m_nVolumeTraded=40)
+        deal = self.deal(m_strRemark='')
+        self.s.get_trade_detail_data.side_effect = lambda account,scope,kind: [order] if kind=='order' else [deal]
+        with self.assertRaises(RuntimeError): self.s.reconcile_trades()
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.route()['remaining'],60)
+        rows = self.s.ledger({})['data']
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['source'],'reconciliation')
+        self.assertEqual(self.s.get_trade_detail_data.call_args_list,
+                         [mock.call('FAKE_NORMAL','stock','order'),mock.call('FAKE_NORMAL','stock','deal')])
+        self.assertEqual(self.s._events[-1]['event_type'],'reconciliation')
+        self.assertEqual(self.s._events[-1]['data']['source'],'query_reconciliation')
+        count = len(self.s._events)
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(len(self.s._events),count)
+        self.s.deal_callback(self.ctx,deal)
+        self.assertEqual(self.s.ledger({})['data'][0]['source'],'reconciliation')
+        self.assertEqual(self.s._events[-1]['data']['ledger_status'],'duplicate')
+        self.s.passorder.assert_called_once()
+
+    def test_callback_origin_preserved_when_reconciliation_sees_duplicate(self):
+        self.submit()
+        deal = self.deal()
+        self.s.deal_callback(self.ctx,deal)
+        self.assertEqual(self.s.ledger({})['data'][0]['source'],'callback')
+        self.s.get_trade_detail_data.side_effect = lambda account,scope,kind: [deal] if kind=='deal' else []
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(len(self.s.ledger({})['data']),1)
+        self.assertEqual(self.s.ledger({})['data'][0]['source'],'callback')
+
+    def test_transient_callback_and_recovery_write_failure_retries_atomically(self):
+        self.submit()
+        before = self.route()
+        row = self.deal()
+        # 在成交INSERT之后、路由UPDATE之前失败，证明整笔事务回滚而非只验证首条SQL。
+        self.sql("CREATE TRIGGER fake_recovery_abort BEFORE UPDATE OF remaining ON bridge_requests "
+                 "BEGIN SELECT RAISE(ABORT,'fake transient database failure'); END")
+        self.s.deal_callback(self.ctx,row)
+        self.assertEqual(self.s._events[-1]['data']['ledger_status'],'unresolved')
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+        self.s.get_trade_detail_data.side_effect = lambda account,scope,kind: [row] if kind=='deal' else []
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+        self.sql('DROP TRIGGER fake_recovery_abort')
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.route()['remaining'],60)
+        rows = self.s.ledger({})['data']
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['source'],'reconciliation')
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.s.ledger({})['data'],rows)
+        self.s.passorder.assert_called_once()
+
+    def test_fresh_module_restart_recovers_order56_then_deals_without_resubmission(self):
+        self.submit()
+        route = self.route()
+        order = self.order(m_nOrderStatus=56,m_nVolumeTraded=100)
+        deals = [self.deal(m_strRemark='',m_nVolume=40),
+                 self.deal(m_strRemark='',m_strTradeID='FAKE_RESTART_DEAL_2',m_nVolume=60)]
+        old = self.s
+        old.stop(self.ctx)
+        # 全新模块模拟进程重启；只继承隔离配置，不保留旧模块的路由或事件内存。
+        self.s = load_server()
+        for name in ('DB_PATH','ENABLE_NORMAL_ACCOUNT','ENABLE_CREDIT_ACCOUNT','NORMAL_ACCOUNT_ID',
+                     'CREDIT_ACCOUNT_ID','BRIDGE_ALLOW_LIVE_ORDERS','BRIDGE_HOST','BRIDGE_PORT'):
+            setattr(self.s,name,getattr(old,name))
+        self.s.datetime = FrozenDatetime
+        self.s.passorder = mock.Mock(side_effect=AssertionError('restart must not resubmit'))
+        self.s.get_trade_detail_data = mock.Mock(side_effect=lambda account,scope,kind:[order] if kind=='order' else deals)
+        self.s.init(self.ctx)
+        self.addCleanup(self.s.stop,self.ctx)
+        self.assertEqual(self.route(),route)
+        self.invoke(self.s.reconcile_trades)
+        recovered = self.route()
+        self.assertEqual(recovered['order_status'],56)
+        self.assertEqual(recovered['remaining'],0)
+        self.assertEqual(recovered['order_id'],'FAKE_ORDER')
+        rows = self.s.ledger({})['data']
+        self.assertEqual(len(rows),2)
+        self.assertEqual(sum(row['volume'] for row in rows),100)
+        self.assertEqual({row['source'] for row in rows},{'reconciliation'})
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.s.ledger({})['data'],rows)
+        self.s.passorder.assert_not_called()
+        old.passorder.assert_called_once()
+
+    def test_http_queries_with_native_records_are_sqlite_readonly(self):
+        self.submit()
+        before = self.route()
+        order,deal = self.order(m_nOrderStatus=56),self.deal()
+        self.s.get_trade_detail_data.side_effect = lambda account,scope,kind:[order] if kind=='order' else [deal]
+        connect = sqlite3.connect
+        denied = {sqlite3.SQLITE_INSERT,sqlite3.SQLITE_UPDATE,sqlite3.SQLITE_DELETE,
+                  sqlite3.SQLITE_CREATE_TABLE,sqlite3.SQLITE_DROP_TABLE}
+        attempts = []
+        def authorize(action,*rest):
+            if action in denied:
+                attempts.append(action)
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        def read_only(*args,**kwargs):
+            conn = connect(*args,**kwargs)
+            conn.set_authorizer(authorize)
+            return conn
+        # RPC传输在本测试内同步桥接到真实execute_rpc；独立线程亲和性已有专门用例。
+        with mock.patch.object(self.s.sqlite3,'connect',side_effect=read_only), \
+                mock.patch.object(self.s,'call_qmt',side_effect=lambda path,params:self.invoke(self.s.execute_rpc,path,params)):
+            for path in ('/orders?request_id=fake_request','/orders?account_type=normal',
+                         '/trades?account_type=normal','/trade/ledger?request_id=fake_request'):
+                with self.subTest(path=path):
+                    h = self.handler(path)
+                    h.dispatch()
+                    h.send_response.assert_called_once_with(200)
+                    self.assertEqual(json.loads(h.wfile.getvalue())['status'],'success')
+        self.assertEqual(attempts,[])
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+        self.s.passorder.assert_called_once()
+
+    def test_reconciliation_cannot_claim_unbound_blank_or_foreign_records(self):
+        self.submit()
+        before = self.route()
+        bad = [self.deal(m_strRemark=''),self.deal(m_strRemark='FAKE_FOREIGN'),
+               self.deal(m_strAccountID='FAKE_EXTERNAL')]
+        self.s.get_trade_detail_data.side_effect = lambda account,scope,kind: bad if kind=='deal' else []
+        self.invoke(self.s.reconcile_trades)
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+        self.s.passorder.assert_called_once()
+
+    def test_native_queries_do_not_recover_or_write_ledger(self):
+        self.submit()
+        before = self.route()
+        deal = self.deal()
+        self.s.get_trade_detail_data.return_value = [deal]
+        # 生产查询需要读取路由，但不得把查询结果直接当callback写账。
+        with mock.patch.object(self.s,'persist_callback',side_effect=AssertionError('query wrote ledger')):
+            result = self.invoke(self.s.query_details,{'account_type':'normal'},'deal')
+        self.assertEqual(result['data'][0]['request_id'],'fake_request')
+        self.assertEqual(self.route(),before)
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_reconciliation_timer_interval_and_disabled_accounts(self):
+        self.submit()
+        self.assertEqual(self.s.RECONCILE_INTERVAL_SECONDS,30)
+        self.s._last_reconcile = 100.0
+        with mock.patch.object(self.s.time,'monotonic',return_value=129):
+            self.s.qmt_timer_callback(self.ctx)
+        self.s.get_trade_detail_data.assert_not_called()
+        with mock.patch.object(self.s.time,'monotonic',return_value=130):
+            self.s.qmt_timer_callback(self.ctx)
+        self.assertEqual(self.s.get_trade_detail_data.call_count,2)
+        self.s.get_trade_detail_data.reset_mock()
+        with mock.patch.object(self.s.time,'monotonic',return_value=131):
+            self.s.qmt_timer_callback(self.ctx)
+        self.s.get_trade_detail_data.assert_not_called()
+        self.s.ENABLE_NORMAL_ACCOUNT = self.s.ENABLE_CREDIT_ACCOUNT = False
+        self.invoke(self.s.reconcile_trades)
+        self.s.get_trade_detail_data.assert_not_called()
+
+    def test_event_cursor_filter_gap_reset(self):
+        self.s._events = deque(maxlen=2)
+        self.s.publish('stock_trade',{'fake':1})
+        self.s.publish('stock_order',{'fake':2})
+        self.s.publish('stock_trade',{'fake':3})
+        batch = self.s.events_after({'after_id':0})
+        self.assertTrue(batch['history_truncated'])
+        self.assertEqual([r['event_id'] for r in batch['data']],[2,3])
+        filtered = self.s.events_after({'after_id':1,'event_types':'position_change'})
+        self.assertEqual(filtered['data'],[])
+        self.assertEqual(filtered['next_event_id'],3)
+        for params in ({'after_id':99},{'stream_id':'FAKE_OLD_STREAM','after_id':3}):
+            self.assertTrue(self.s.events_after(params)['history_truncated'])
+        old = self.s._stream_id
+        self.s.stop(self.ctx); self.s.init(self.ctx)
+        self.assertNotEqual(old,self.s._stream_id)
+        self.assertTrue(self.s.events_after({'stream_id':old})['history_truncated'])
+
+    def test_longpoll_wakes_on_publish(self):
+        ready = threading.Event()
+        result = []
+        original_wait = self.s._event_condition.wait
+        def wait(timeout):
+            ready.set()
+            return original_wait(timeout)
+        with mock.patch.object(self.s._event_condition,'wait',side_effect=wait):
+            t = threading.Thread(target=lambda:result.append(self.s.events_after({'timeout':1})),daemon=True)
+            t.start()
+            self.assertTrue(ready.wait(1))
+            self.s.publish('stock_trade',{'fake':True})
+            t.join(1)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(result[0]['data'][0]['event_type'],'stock_trade')
+
+    def handler(self, path='/health', method='GET', body=b'', headers=None):
+        # 不创建socket的故障注入处理器，真实dispatch/read_request/stream仍完整执行。
+        h = object.__new__(self.s.BridgeHandler)
+        h.path, h.command = path, method
+        h.headers = headers or {}
+        h.rfile, h.wfile = io.BytesIO(body), io.BytesIO()
+        h.response_started = False
+        h.close_connection = False
+        h.send_response = mock.Mock()
+        h.send_header = mock.Mock()
+        h.end_headers = mock.Mock()
+        return h
+
+    def test_http_validation_auth_methods_errors(self):
+        cases = [('/missing','GET',b'',{},404),('/trade/order','GET',b'',{},405),
+            ('/health','POST',b'{}',{'Content-Length':'2'},405),
+            ('/trade/order','POST',b'[]',{'Content-Length':'2'},400),
+            ('/trade/order?x=1','POST',b'{}',{'Content-Length':'2'},400),
+            ('/trade/order','POST',b'{',{'Content-Length':'1'},400),
+            ('/trade/order','POST',b'{}',{'Content-Length':'4'},400),
+            ('/trade/order','POST',b'{}',{'Content-Length':'2','Transfer-Encoding':'chunked'},400),
+            ('/trade/order','POST',b'',{'Content-Length':'65537'},400),
+            ('/events?after_id=-1','GET',b'',{},400),
+            ('/events?event_types=bad','GET',b'',{},400),
+            ('/events/stream?heartbeat=0','GET',b'',{},400),
+            ('/health','OPTIONS',b'',{},200)]
+        for path,method,body,headers,status in cases:
+            with self.subTest(path=path,method=method,body=body,headers=headers):
+                h = self.handler(path,method,body,headers)
+                h.dispatch()
+                h.send_response.assert_called_once_with(status)
+        self.s.BRIDGE_ACCESS_TOKEN = 'FAKE_TOKEN'
+        h = self.handler(); h.dispatch(); h.send_response.assert_called_once_with(401)
+        h = self.handler(headers={'X-QMT-Bridge-Token':'FAKE_TOKEN'})
+        h.dispatch(); h.send_response.assert_called_once_with(200)
+        self.s.BRIDGE_ACCESS_TOKEN = ''
+        with mock.patch.object(self.s,'call_qmt',side_effect=RuntimeError('FAKE_NORMAL internal')):
+            h = self.handler('/tick'); h.dispatch()
+            h.send_response.assert_called_once_with(503)
+            self.assertNotIn(b'FAKE_NORMAL',h.wfile.getvalue())
+
+    def test_disconnect_faults_headers_body_options_sse(self):
+        for exc in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            for method,path in (('GET','/health'),('OPTIONS','/health'),('GET','/events/stream')):
+                for stage in ('send_response','end_headers','write','flush'):
+                    with self.subTest(exc=exc.__name__,method=method,path=path,stage=stage):
+                        h = self.handler(path,method)
+                        if stage in ('write','flush'):
+                            h.wfile = mock.Mock()
+                            getattr(h.wfile,stage).side_effect = exc('fake disconnect')
+                        else:
+                            getattr(h,stage).side_effect = exc('fake disconnect')
+                        h.dispatch()
+                        self.assertTrue(h.close_connection)
+                        self.assertEqual(h.send_response.call_count,1)
+        h = self.handler('/trade/order','POST',headers={'Content-Length':'2'})
+        h.rfile = mock.Mock(); h.rfile.read.side_effect = ConnectionResetError('fake read reset')
+        h.dispatch(); h.send_response.assert_not_called()
+
+    def test_sse_last_event_id_cursor_and_gap(self):
+        self.s.publish('stock_order',{'fake':1})
+        self.s.publish('stock_trade',{'fake':2})
+        self.s._running = False  # 仅结束SSE循环；不是替换交易门禁。
+        h = self.handler('/events/stream',headers={'Last-Event-ID':'1'})
+        h.dispatch()
+        body = h.wfile.getvalue().decode('utf-8')
+        self.assertNotIn('id: 1\n',body)
+        self.assertIn('id: 2\n',body)
+        self.assertIn('event: bridge_cursor',body)
+        self.assertIn('"next_event_id": 2',body)
+        h = self.handler('/events/stream?stream_id=FAKE_OLD')
+        h.dispatch()
+        self.assertIn(b'event: bridge_gap',h.wfile.getvalue())
+
+    def test_start_bind_failure_retry_concurrent_start_stop_start_and_loopback(self):
+        with mock.patch.object(self.s,'BridgeServer',side_effect=OSError('fake bind failure')):
+            with self.assertRaises(OSError): self.s.start_server()
+        self.assertIsNone(self.s._server)
+        self.assertIsNone(self.s._server_thread)
+        # 缩短HTTPServer空闲轮询，只影响测试停机等待，不修改业务门禁。
+        original = self.s.BridgeServer.serve_forever
+        with mock.patch.object(self.s.BridgeServer,'serve_forever',lambda server:original(server,poll_interval=0.01)):
+            barrier = threading.Barrier(3)
+            errors = []
+            def start():
+                try:
+                    barrier.wait(1); self.s.start_server()
+                except Exception as exc: errors.append(exc)
+            workers = [threading.Thread(target=start,daemon=True) for _ in range(2)]
+            for t in workers: t.start()
+            barrier.wait(1)
+            for t in workers: t.join(1); self.assertFalse(t.is_alive())
+            self.assertEqual(errors,[])
+            first = self.s._server
+            self.assertEqual(first.server_address[0],'127.0.0.1')
+            self.assertNotIn(first.server_address[1],(0,1690,1693))
+            conn = http.client.HTTPConnection(*first.server_address,timeout=1)
+            try:
+                conn.request('GET','/health')
+                response = conn.getresponse()
+                self.assertEqual(response.status,200)
+                self.assertEqual(json.loads(response.read())['product'],'qmt_bridge_standard')
+            finally: conn.close()
+            thread = self.s._server_thread
+            self.s.stop(self.ctx)
+            self.assertFalse(thread.is_alive())
+            self.s.init(self.ctx); self.s.start_server()
+            self.assertIsNot(self.s._server,first)
+            self.s.stop(self.ctx)
+
+    def error_args(self, **changes):
+        route = self.route()
+        # 官方PassorderArguments字段，不以委托/成交对象的m_strRemark冒充。
+        values = dict(accountID=route['account_id'], orderCode=route['stock_code'],
+                      opType=route['op_type'],
+                      strategyName=route['strategy_name']+'_&&&_'+route['broker_remark'])
+        values.update(changes)
+        return types.SimpleNamespace(**values)
+
+    def test_official_order_error_persists_without_terminal_claim(self):
+        self.submit()
+        before = self.route()
+        self.s.orderError_callback(self.ctx,self.error_args(),'FAKE_NORMAL fake refusal')
+        after = self.route()
+        self.assertEqual(after['submission_state'],before['submission_state'])
+        self.assertIsNone(after['order_status'])
+        self.assertEqual(after['remaining'],100)
+        details = json.loads(after['result_json'])
+        self.assertIn('order_error',details)
+        self.assertNotIn('FAKE_NORMAL',details['order_error'])
+        event = self.s._events[-1]
+        self.assertEqual(event['event_type'],'order_error')
+        self.assertEqual(event['data']['routing_status'],'matched')
+        self.assertEqual(event['data']['request_id'],'fake_request')
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_order_error_missing_disabled_or_unsupported_account_dropped(self):
+        self.submit()
+        before = self.route()
+        for args in (types.SimpleNamespace(m_strRemark=before['broker_remark']),
+                     self.error_args(accountID='FAKE_OTHER'),self.error_args(accountID='')):
+            with self.subTest(args=vars(args)):
+                self.s.orderError_callback(self.ctx,args,'fake error')
+                self.assertEqual(list(self.s._events),[])
+        self.s.ENABLE_NORMAL_ACCOUNT = False
+        self.s.orderError_callback(self.ctx,self.error_args(),'fake disabled')
+        self.assertEqual(list(self.s._events),[])
+        self.assertEqual(self.route(),before)
+
+    def test_order_error_composite_identity_mismatch_unresolved(self):
+        self.submit()
+        before = self.route()
+        for changes in (dict(orderCode='000002.SZ'),dict(opType=24),dict(accountID='FAKE_CREDIT'),
+                        dict(strategyName='fake_strategy'),
+                        dict(strategyName='other_&&&_'+before['broker_remark']),
+                        dict(strategyName='fake_strategy_&&&_FAKE_OTHER_REMARK')):
+            with self.subTest(changes=changes):
+                self.s.orderError_callback(self.ctx,self.error_args(**changes),'fake mismatch')
+                self.assertEqual(self.s._events[-1]['data']['routing_status'],'unresolved')
+                self.assertEqual(self.route(),before)
+
+    def test_synchronous_official_order_error_survives_passorder_return(self):
+        def intercept(*args):
+            self.s.orderError_callback(self.ctx,self.error_args(),'fake synchronous error')
+            return 0
+        self.s.passorder.side_effect = intercept
+        result = self.submit()
+        self.assertEqual(result['submission_result'].get('order_error'),'fake synchronous error')
+        self.assertIsNone(result['order_status'])
+        self.assertEqual(self.s.ledger({})['data'],[])
+
+    def test_persistent_request_query_read_only_filters_and_restart(self):
+        self.submit()
+        before = self.route()
+        # SQLite authorizer拒绝一切写操作，同时保留生产database上下文及真实SQL。
+        connect = sqlite3.connect
+        denied = {sqlite3.SQLITE_INSERT,sqlite3.SQLITE_UPDATE,sqlite3.SQLITE_DELETE,
+                  sqlite3.SQLITE_CREATE_TABLE,sqlite3.SQLITE_DROP_TABLE}
+        def read_only(*args,**kwargs):
+            conn = connect(*args,**kwargs)
+            conn.set_authorizer(lambda action,*rest:sqlite3.SQLITE_DENY if action in denied else sqlite3.SQLITE_OK)
+            return conn
+        with mock.patch.object(self.s.sqlite3,'connect',side_effect=read_only):
+            result = self.s.query_request({'request_id':'fake_request'})
+            self.assertEqual(result['source'],'persistent_request')
+            self.assertEqual(result['data'][0]['request_id'],'fake_request')
+            self.assertNotIn('account_id',result['data'][0])
+            for params in ({'request_id':'missing'},{'request_id':'fake_request','account_type':'credit'}):
+                self.assertEqual(self.s.query_request(params)['data'],[])
+        self.s.stop(self.ctx); self.s.init(self.ctx)
+        self.assertEqual(self.s.query_request({'request_id':'fake_request'}),result)
+        self.assertEqual(self.route(),before)
+        self.s.ENABLE_NORMAL_ACCOUNT = False
+        self.assertEqual(self.s.query_request({'request_id':'fake_request'})['data'],[])
+        self.s.passorder.assert_called_once()
+        self.s.get_trade_detail_data.assert_not_called()
+
+    def test_http_orders_request_id_bypasses_native_rpc(self):
+        self.submit()
+        with mock.patch.object(self.s,'call_qmt',side_effect=AssertionError('persistent query queued native RPC')):
+            h = self.handler('/orders?request_id=fake_request')
+            h.dispatch()
+        h.send_response.assert_called_once_with(200)
+        result = json.loads(h.wfile.getvalue())
+        self.assertEqual(result['source'],'persistent_request')
+        self.assertEqual(result['data'][0]['request_id'],'fake_request')
+
+    def test_both_accounts_disabled_query_needs_no_native_function(self):
+        self.s.ENABLE_NORMAL_ACCOUNT = self.s.ENABLE_CREDIT_ACCOUNT = False
+        with mock.patch.object(self.s,'native_function',side_effect=AssertionError('disabled account native lookup')):
+            for kind in ('account','position','order','deal'):
+                self.assertEqual(self.invoke(self.s.query_details,{},kind)['data'],[])
+
+    def test_queued_deadline_and_stop_cancel_work_before_restart(self):
+        def task(deadline):
+            return dict(path='/trade/order',params=self.params(),deadline=deadline,state='queued',
+                        lock=threading.Lock(),done=threading.Event())
+        expired = task(0)
+        self.s._rpc_queue.put_nowait(expired)
+        self.invoke(self.s.drain_rpc)
+        self.assertTrue(expired['done'].is_set())
+        self.assertIsInstance(expired['error'],TimeoutError)
+        waiting = task(float('inf'))
+        self.s._rpc_queue.put_nowait(waiting)
+        self.s.stop(self.ctx)
+        self.assertTrue(waiting['done'].is_set())
+        self.assertIsInstance(waiting['error'],RuntimeError)
+        self.s.init(self.ctx)
+        self.invoke(self.s.drain_rpc)
+        self.s.passorder.assert_not_called()
+        self.assertEqual(self.s._rpc_queue.unfinished_tasks,0)
+
+    def test_thread_start_failure_closes_bound_socket(self):
+        server = mock.Mock()
+        with mock.patch.object(self.s,'BridgeServer',return_value=server) as constructor, \
+                mock.patch.object(self.s.threading.Thread,'start',side_effect=RuntimeError('fake start failure')):
+            with self.assertRaises(RuntimeError): self.s.start_server()
+        constructor.assert_called_once_with(('127.0.0.1',0),self.s.BridgeHandler)
+        server.server_close.assert_called_once()
+        self.assertIsNone(self.s._server)
+
+
+if __name__ == '__main__':
+    unittest.main()

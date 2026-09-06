@@ -1,0 +1,149 @@
+# -*- coding: utf-8 -*-
+"""真实大QMT运行检查：只读行情/账户、订单预演和有界事件监听。
+
+默认不发送真实订单。--weekend-order-gate仅在本机周末且真实报单开关关闭时，
+验证服务端拒单门禁；不修改开关、账号或数据库。不将空事件流解释为成交回推成功。
+报告只保存计数、行情摘要和已脱敏诊断，不保存账号、持仓、委托明细或令牌。
+"""
+import argparse
+import hashlib
+import json
+import os
+from datetime import datetime
+from bridge_client import BridgeClient, BridgeError, DEFAULT_BASE_URL
+
+
+def run_check(client, weekend_order_gate=False, log_path=None):
+    result = {"checked_at": datetime.now().isoformat(), "weekday": datetime.now().weekday(),
+              "checks": [], "real_order_submitted": False}
+    checks = result["checks"]
+
+    def record(name, state, **details):
+        entry = {"name": name, "result": state}
+        entry.update(details)
+        checks.append(entry)
+
+    try:
+        health = client.health(require_ready=False)
+    except Exception as exc:
+        record("health", "FAIL", message=str(exc))
+        result["overall"] = "FAIL"
+        return result
+    result["health"] = health
+    record("health", "PASS", source_version=health.get("source_version"))
+    rpc_ok = health.get("runtime_ready") is True and health.get("rpc_ready") is not False
+    ticks = {}
+    if rpc_ok:
+        for code in ("000001.SH", "600000.SH", "510300.SH"):
+            try:
+                data = client.tick(code)["data"]
+                if not data or not data.get("lastPrice"):
+                    record("tick:"+code, "FAIL", message="没有有效最新价")
+                    continue
+                ticks[code] = data
+                record("tick:"+code, "PASS", time=data.get("time"), last_price=data.get("lastPrice"),
+                       bid_levels=len(data.get("bidPrice", [])), ask_levels=len(data.get("askPrice", [])))
+            except Exception as exc:
+                record("tick:"+code, "FAIL", message=str(exc))
+                rpc_ok = False
+                break  # 首个RPC失败即停止堆积请求，保留事件接口用于独立诊断。
+    else:
+        record("rpc", "FAIL", message="原生回调未就绪，检查timer_count/last_timer_at")
+    if rpc_ok:
+        for code, period, count in (("600000.SH", "1d", 10), ("510300.SH", "5m", 5)):
+            try:
+                data = client.history_data(code, period=period, count=count,
+                    fields=["open", "high", "low", "close", "volume"],
+                    dividend_type="none", fill_data=False, subscribe=False)["data"]
+                record("history:"+code+":"+period, "PASS" if data else "FAIL", rows=len(data),
+                       first_time=data[0].get("time") if data else None,
+                       last_time=data[-1].get("time") if data else None)
+            except Exception as exc:
+                record("history:"+code+":"+period, "FAIL", message=str(exc))
+    scopes = health.get("accounts", [])
+    if not scopes:
+        record("account_and_order", "BLOCKED", message="运行配置未启用任何账户；不能验证原生账户与订单预演")
+    elif rpc_ok:
+        for scope in scopes:
+            for name in ("assets", "positions", "orders", "trades"):
+                try:
+                    data = getattr(client, name)(scope)["data"]
+                    record(name+":"+scope, "PASS" if data or name != "assets" else "WARN", rows=len(data))
+                except Exception as exc:
+                    record(name+":"+scope, "FAIL", message=str(exc))
+            request_id = "weekend_check_"+datetime.now().strftime("%Y%m%d_%H%M%S")+"_"+scope
+            order = dict(stock_code="600000.SH", account_type=scope, action="BUY",
+                         price=float(ticks.get("600000.SH", {}).get("lastPrice", 10.0)),
+                         volume=100, user_order_id=request_id, strategy_name="bridge_probe")
+            if scope == "credit":
+                order["op_type"] = 33  # 显式担保品买入，仅预演，不猜测融资通道。
+            try:
+                reply = client.order(**order)["data"]
+                record("dry_run:"+scope, "PASS" if reply.get("dry_run") is True else "FAIL",
+                       submission_state=reply.get("submission_state"))
+            except Exception as exc:
+                record("dry_run:"+scope, "FAIL", message=str(exc))
+            if weekend_order_gate:
+                # 不因测试而启用真实报单；开关已开启或非周末时绝不发送此请求。
+                if datetime.now().weekday() < 5 or health.get("live_orders_enabled") is not False:
+                    record("order_guard:"+scope, "BLOCKED", message="本门禁测试仅允许周末且真实报单关闭")
+                else:
+                    try:
+                        client.order(dry_run=False, confirm_live_order="LIVE_ORDER", **order)
+                        result["real_order_submitted"] = None
+                        record("order_guard:"+scope, "FAIL", message="应拒绝的请求未返回拒绝，须人工核对")
+                    except BridgeError as exc:
+                        message = str(exc)
+                        expected = "真实报单需要" in message or "当前不在A股" in message
+                        if not expected:
+                            result["real_order_submitted"] = None
+                        record("order_guard:"+scope, "PASS" if expected else "FAIL", message=message)
+    try:
+        batch = client.events(timeout=1)
+        record("events_long_poll", "PASS", events=len(batch["data"]), history_truncated=batch.get("history_truncated"))
+        frames = list(client.events_sse(after_id=batch["next_event_id"], stream_id=batch["stream_id"],
+                                       max_seconds=3, heartbeat=1))
+        business = [f for f in frames if f["event"] not in ("bridge_cursor", "bridge_gap")]
+        record("events_sse", "PASS", frames=len(frames), business_events=len(business),
+               message="连接正常不等于收到委托或成交回调")
+    except Exception as exc:
+        record("event_transport", "FAIL", message=str(exc))
+    record("real_fill_callback", "NOT_VERIFIED", message="本检查不发起真实可成交订单，未证明柜台成交及落账")
+    if log_path:
+        try:
+            with open(log_path, "rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell()-1024*1024))
+                raw = stream.read()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("gbk", errors="replace")
+            lines = [line[line.index("[qmt_bridge_standard]"):]
+                     for line in text.splitlines() if "[qmt_bridge_standard]" in line]
+            # 服务端自身消息已隐藏账号；此处不复制原生日志的reqid路径与其他模型输出。
+            result["bridge_log_tail"] = lines[-30:]
+        except OSError as exc:
+            record("log_read", "BLOCKED", message=type(exc).__name__)
+    result["overall"] = "FAIL" if any(c["result"] == "FAIL" for c in checks) else "PARTIAL"
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="真实桥接只读检查与周末关闭报单门禁验证")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--weekend-order-gate", action="store_true")
+    parser.add_argument("--log-path", help="可选大QMT公式输出日志，仅保存本桥接脱敏消息")
+    parser.add_argument("--output", default="runtime_check.json")
+    args = parser.parse_args()
+    report = run_check(BridgeClient(args.base_url), args.weekend_order_gate, args.log_path)
+    source = os.path.join(os.path.dirname(__file__), "qmt_bridge_server.py")
+    with open(source, "rb") as f:
+        report["workspace_source_sha256"] = hashlib.sha256(f.read()).hexdigest()
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    print(json.dumps({"overall": report.get("overall", "FAIL"), "checks": report["checks"]}, ensure_ascii=True))
+
+
+if __name__ == "__main__":
+    main()

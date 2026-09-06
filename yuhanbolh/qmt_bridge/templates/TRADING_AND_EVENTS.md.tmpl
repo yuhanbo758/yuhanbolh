@@ -1,0 +1,45 @@
+> yuhanbolh 导出说明：qmt_bridge_server.py 已转换为 GBK，可作为大QMT部署副本；其余文件为 UTF-8。修改服务端请保持 GBK。此包不附任何实际运行验收报告。
+
+# 交易与回推
+
+本协议采用直接订单：`POST /trade/order` 经服务端进入大QMT原生执行路径；不会同时写入旧项目中转委托入口。本标准包不宣称替代旧监控器的融资拆单、条件交易或跨策略对冲。
+
+`user_order_id` 是调用者为同一逻辑请求保存的稳定标识，不是柜台委托号、成交编号或策略备注。网络超时后保持原标识，先查询委托、成交及账本，确认状态再处理；不自动更换标识、不盲目重发。账本暂时为空也不能证明订单未提交。
+
+服务端将 `strategy_name` 传入柜台策略名，另生成唯一 `broker_remark` 传入柜台投资备注；外部请求号通过持久化路由关联。没有私人策略名单，也没有按策略决定资产类别的特例。
+
+```python
+from bridge_client import BridgeClient
+client = BridgeClient()
+# 只读查询原请求，不重新报单；全部输出仅使用账户别名。
+request = client.orders(account_type="normal", request_id="example-request-001")
+fills = client.ledger(request_id="example-request-001", account_type="normal")
+```
+
+独立库由 `bridge_meta`（产品/版本）、`bridge_requests`（请求和路由）、`bridge_deals`（统一成交账本）组成。初始化拒绝其他应用数据库，不迁移旧记录。成交唯一键为内部账号、交易日、成交编号；成交插入与剩余量扣减同事务，失败全部回滚。重复成交不再扣减；相同编号内容冲突、日期缺失和路由冲突均停止自动归账，并在事件中返回 `ledger_status=unresolved`。首次绑定柜台号必须匹配桥接生成的唯一备注；即使只有一个候选，也不接受空备注初次绑定。空备注只允许已确认绑定的柜台号唯一匹配，防止把同账户手工单误记为桥接单。
+
+事件的 `ledger_status=written` 或 `duplicate` 表示本地落账结果；`unresolved` 要求核对原因。HTTP查询只读。大QMT定时回调每30秒查询一次本桥接已有请求涉及的已启用账户，先核对委托，再按严格路由匹配恢复漏掉的成交；不会提交或重报订单。账本source字段区分 `callback`（回调）和 `reconciliation`（查询恢复），恢复摘要以独立 `reconciliation` 事件发布，不能冒充原始回调。查询失败或柜台已不再提供历史记录时仍需人工对账；submitting/unknown请求没有来源证据就保持未决，不自动换号重报。不要手工清空库来解除活动请求保护。
+
+订单示例默认预演，下列占位值需由使用者自行填写：
+
+```powershell
+python .\example_order.py --stock-code <证券代码> --account-type normal --action BUY --price <价格> --volume <数量> --user-order-id <稳定请求号>
+```
+
+尖括号是说明占位符，不能原样复制执行。信用账户额外要求已按原生接口核对的 `--op-type`，示例不猜测融资或还款枚举。
+
+只有当前已获真实交易授权时，才可同时追加 `--live-order --confirm-live-order LIVE_ORDER`。单独提供任一参数都会被示例拒绝。服务端还必须启用对应账户、配置账号和数据库、许可真实报单，并通过原生执行前校验；客户端确认不能绕过这些门禁。
+
+分别核实以下证据：
+
+1. dry-run：只证明预演返回；不代表真实提交。
+2. 提交结果：即使passorder返回0或非负值，也不代表柜台接受。
+3. 委托回报：描述委托状态，不能替代逐笔成交。
+4. 成交回推：来自成交回调，事件本身不是持久化业务账本。
+5. `/trade/ledger`：核对已落账成交、请求关联及部分成交去重。
+
+事件列表和SSE均可能因内存环溢出或服务重启出现缺口。长轮询检查 `history_truncated`、`stream_id`，在成功消费后保存 `next_event_id`；SSE检查 `bridge_gap`，按载荷保存已消费的 `event_id` 与 `stream_id`。不要仅持有数字游标跨实例续接。
+
+发生缺口时停止把事件流视为完整记录，通过账户委托、成交查询及持久化账本对账，并在应用中记录缺口。不能把查询结果伪装为补收到的原始回调。`event_id` 不是成交去重键，SSE心跳也不是成交证据。
+
+示例只进行一次长轮询或一次有界SSE连接，打印完整响应，不落库、不自动续订。生产消费者应在业务处理成功后持久化游标，处理重复消费与缺口；POST依旧不自动重试。

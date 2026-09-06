@@ -1,0 +1,201 @@
+# -*- coding: utf-8 -*-
+"""客户端、示例和编码工具离线测试；不连接真实服务。"""
+import importlib.util
+import io
+import json
+import os
+import tempfile
+import unittest
+from unittest import mock
+from urllib.error import HTTPError
+import bridge_client
+import validate_source
+import check_runtime
+
+
+class Response(io.BytesIO):
+    def __init__(self, data, sse=False):
+        body = data if isinstance(data, bytes) else json.dumps(data).encode("utf-8")
+        super().__init__(body)
+        self.headers = {"Content-Type": "text/event-stream" if sse else "application/json"}
+
+
+def health(**changes):
+    result = {"status": "success", "product": "qmt_bridge_standard", "api_version": 1,
+              "runtime_ready": True, "capabilities": ["market_data", "account_query",
+              "direct_order", "trade_ledger", "events_long_poll", "events_sse"]}
+    result.update(changes)
+    return result
+
+
+class ClientTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bridge_client.BridgeClient(token="FAKE_TOKEN")
+        self.open = mock.Mock()
+        self.client._opener.open = self.open
+
+    def respond(self, data):
+        self.open.side_effect = [Response(health()), Response(data)]
+
+    def test_auto_health_before_data_and_token_header(self):
+        self.respond({"status": "success", "data": {"lastPrice": 10}})
+        self.assertEqual(self.client.tick("600000.SH")["data"]["lastPrice"], 10)
+        requests = [call[0][0] for call in self.open.call_args_list]
+        self.assertTrue(requests[0].full_url.endswith("/health"))
+        self.assertEqual(requests[1].get_header("X-qmt-bridge-token"), "FAKE_TOKEN")
+        self.assertNotIn("FAKE_TOKEN", requests[1].full_url)
+
+    def test_wrong_product_never_posts(self):
+        self.open.return_value = Response(health(product="legacy"))
+        with self.assertRaises(bridge_client.BridgeError):
+            self.client.order("600000.SH", "normal", "BUY", 10, 100, "r1")
+        self.assertEqual(self.open.call_count, 1)
+        self.assertEqual(self.open.call_args[0][0].get_method(), "GET")
+
+    def test_wrong_version_capability_not_ready(self):
+        for change in ({"api_version": 2}, {"capabilities": []}, {"runtime_ready": False}):
+            self.open.return_value = Response(health(**change))
+            with self.assertRaises(bridge_client.BridgeError):
+                self.client.health(["market_data"])
+
+    def test_stalled_rpc_health_rejects_native_calls_but_allows_event_diagnostics(self):
+        self.open.side_effect = [Response(health(rpc_ready=False)), Response(health(rpc_ready=False))]
+        with self.assertRaises(bridge_client.BridgeError):
+            self.client.health(["market_data"])
+        self.assertTrue(self.client.health(["events_sse"])["runtime_ready"])
+
+    def test_post_defaults_dry_run_and_never_retries(self):
+        self.open.side_effect = [Response(health()), OSError("FAKE_TOKEN")]
+        with self.assertRaises(bridge_client.BridgeError) as caught:
+            self.client.order("600000.SH", "normal", "BUY", 10, 100, "r1")
+        self.assertNotIn("FAKE_TOKEN", str(caught.exception))
+        self.assertEqual(self.open.call_count, 2)
+        request = self.open.call_args[0][0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertTrue(json.loads(request.data)["dry_run"])
+
+    def test_order_local_validation_before_network(self):
+        for changes in ({"dry_run": False}, {"dry_run": "false"}, {"user_order_id": ""},
+                        {"account_type": "credit"}, {"strategy_name": "测" * 11}):
+            args = dict(stock_code="600000.SH", account_type="normal", action="BUY",
+                        price=10, volume=100, user_order_id="r1")
+            args.update(changes)
+            with self.assertRaises(ValueError):
+                self.client.order(**args)
+        self.open.assert_not_called()
+
+    def test_live_payload_keeps_confirmation(self):
+        self.respond({"status": "success", "data": {"submission_state": "passorder_called"}})
+        self.client.order("600000.SH", "credit", "BUY", 10, 100, "r1", op_type=33,
+                          dry_run=False, confirm_live_order="LIVE_ORDER")
+        payload = json.loads(self.open.call_args[0][0].data)
+        self.assertEqual(payload["confirm_live_order"], "LIVE_ORDER")
+        self.assertEqual(payload["op_type"], 33)
+
+    def test_history_defaults_and_explicit_parameters(self):
+        self.respond({"status": "success", "data": []})
+        self.client.history_data("600000.SH", fields=["close", "volume"], fill_data=True,
+                                 dividend_type="front", start_time="20260101")
+        url = self.open.call_args[0][0].full_url
+        self.assertIn("subscribe=false", url)
+        self.assertIn("fill_data=true", url)
+        self.assertIn("dividend_type=front", url)
+
+    def test_request_query_and_ledger(self):
+        self.respond({"status": "success", "data": []})
+        self.client.orders(request_id="stable-1")
+        self.assertIn("request_id=stable-1", self.open.call_args[0][0].full_url)
+        self.respond({"status": "success", "data": []})
+        self.client.ledger("stable-1", "normal")
+        self.assertIn("account_type=normal", self.open.call_args[0][0].full_url)
+
+    def test_error_json_http_no_secret_echo(self):
+        for response in (Response(b"bad-json"), Response({"status": "error", "message": "FAKE_TOKEN"})):
+            self.open.return_value = response
+            with self.assertRaises(bridge_client.BridgeError) as caught:
+                self.client.health()
+            self.assertNotIn("FAKE_TOKEN", str(caught.exception))
+        self.open.side_effect = HTTPError("fake", 503, "FAKE_TOKEN", {}, io.BytesIO(b"FAKE_TOKEN"))
+        with self.assertRaises(bridge_client.BridgeError) as caught:
+            self.client.health()
+        self.assertNotIn("FAKE_TOKEN", str(caught.exception))
+
+    def test_sse_multiline_gap_cursor_and_incomplete_frame(self):
+        body = (b': keepalive\n\nevent: stock_trade\nid: 1\ndata: {"stream_id": "s",\n'
+                b'data: "data": {"request_id": "r1"}}\n\nevent: bridge_gap\ndata: {}\n\n'
+                b'event: bridge_cursor\ndata: {"next_event_id": 1}\n\ndata: {"incomplete": true}')
+        self.open.side_effect = [Response(health()), Response(body, True)]
+        frames = list(self.client.events_sse())
+        self.assertEqual([x["event"] for x in frames], ["stock_trade", "bridge_gap", "bridge_cursor"])
+        self.assertEqual(frames[0]["data"]["data"]["request_id"], "r1")
+
+    def test_no_redirect_and_address_validation(self):
+        self.assertIsNone(bridge_client._NoRedirect().redirect_request(None,None,302,"",{},"http://example.invalid"))
+        for url in ("http://user:pass@example.invalid", "http://localhost/path", "ftp://localhost", "http://localhost?token=x"):
+            with self.assertRaises(ValueError):
+                bridge_client.BridgeClient(url)
+
+    def test_examples_import_without_network(self):
+        root = os.path.dirname(__file__)
+        with mock.patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("network forbidden")):
+            for name in ("example_data", "example_order", "example_events"):
+                spec = importlib.util.spec_from_file_location("isolated_"+name, os.path.join(root,name+".py"))
+                spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
+
+class ValidatorTests(unittest.TestCase):
+    def test_gbk_roundtrip_without_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = '# -*- coding: gbk -*-\n# 中文\nraise RuntimeError("must not execute")\n'
+            with open(os.path.join(root, "qmt_bridge_server.py"), "w", encoding="utf-8", newline="") as f:
+                f.write(source)
+            report, raw = validate_source.check_source(root)
+            self.assertTrue(report["passed"])
+            self.assertEqual(raw.decode("gbk"), source)
+
+    def test_bad_python36_and_non_gbk_rejected(self):
+        for source in ('# -*- coding: gbk -*-\nif (x := 1): pass\n', '# -*- coding: gbk -*-\n# \U0001f680\n'):
+            with tempfile.TemporaryDirectory() as root:
+                with open(os.path.join(root,"qmt_bridge_server.py"), "w", encoding="utf-8") as f:
+                    f.write(source)
+                report, _ = validate_source.check_source(root)
+                self.assertFalse(report["passed"])
+
+
+class RuntimeCheckerTests(unittest.TestCase):
+    def test_unreachable_health_stops_all_business_calls(self):
+        client = mock.Mock()
+        client.health.side_effect = bridge_client.BridgeError('offline')
+        result = check_runtime.run_check(client)
+        self.assertEqual(result['overall'],'FAIL')
+        client.tick.assert_not_called()
+        client.order.assert_not_called()
+
+    def test_rpc_not_ready_skips_native_work_but_probes_transport(self):
+        client = mock.Mock()
+        client.health.return_value = health(rpc_ready=False,accounts=[])
+        client.events.return_value = {'data':[],'next_event_id':0,'stream_id':'fake','history_truncated':False}
+        client.events_sse.return_value = [{'event':'bridge_cursor','data':{}}]
+        result = check_runtime.run_check(client)
+        self.assertEqual(result['overall'],'FAIL')
+        client.tick.assert_not_called()
+        client.order.assert_not_called()
+        self.assertTrue(any(x['name']=='events_sse' and x['result']=='PASS' for x in result['checks']))
+
+    def test_enabled_live_switch_never_sends_real_guard_probe(self):
+        client = mock.Mock()
+        client.health.return_value = health(rpc_ready=True,accounts=['normal'],live_orders_enabled=True)
+        client.tick.return_value = {'data':{'lastPrice':10,'time':0}}
+        client.history_data.return_value = {'data':[{'time':'20260904'}]}
+        for name in ('assets','positions','orders','trades'):
+            getattr(client,name).return_value = {'data':[]}
+        client.order.return_value = {'data':{'dry_run':True,'submission_state':'dry_run'}}
+        client.events.return_value = {'data':[],'next_event_id':0,'stream_id':'fake','history_truncated':False}
+        client.events_sse.return_value = []
+        check_runtime.run_check(client,weekend_order_gate=True)
+        self.assertEqual(client.order.call_count,1)
+        self.assertNotIn('dry_run',client.order.call_args[1])
+
+
+if __name__ == "__main__":
+    unittest.main()

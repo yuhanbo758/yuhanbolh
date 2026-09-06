@@ -1,4 +1,4 @@
-akshare>=1.12.10
+akshare>=1.18.94
 baostock>=0.7.5
 beautifulsoup4>=4.12.0
 bottleneck>=1.4.2
@@ -8,7 +8,6 @@ numexpr>=2.10.2
 pandas>=2.2.2
 pymysql>=1.1.0
 pytdx>=1.72
-pywencai>=0.3.7
 requests>=2.31.0
 schedule>=1.2.0
 scipy>=1.12.0

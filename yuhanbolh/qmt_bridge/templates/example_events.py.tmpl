@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+"""有界订阅示例；打印完整游标与缺口，不自动重连或补造事件。"""
+import argparse
+import json
+from bridge_client import BridgeClient, DEFAULT_BASE_URL
+
+
+def main():
+    parser = argparse.ArgumentParser(description="只读长轮询或SSE回推")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--sse", action="store_true")
+    parser.add_argument("--after-id", type=int, default=0)
+    parser.add_argument("--stream-id")
+    parser.add_argument("--event-types", help="逗号分隔；留空接收全部类型")
+    parser.add_argument("--seconds", type=float, default=20)
+    parser.add_argument("--heartbeat", type=float, default=10)
+    args = parser.parse_args()
+    client = BridgeClient(args.base_url)
+    client.health(["events_sse" if args.sse else "events_long_poll"])
+    if args.sse:
+        for frame in client.events_sse(args.after_id, args.event_types,
+                                      args.stream_id, args.seconds, args.heartbeat):
+            print(json.dumps(frame, ensure_ascii=False), flush=True)
+    else:
+        print(json.dumps(client.events(args.after_id, args.event_types,
+                                       args.seconds, args.stream_id),
+                         ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
